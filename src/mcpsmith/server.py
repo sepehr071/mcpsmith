@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 from pathlib import Path
 from typing import Annotated
 
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import Field
 
 from . import __version__
-from .cli import DEFAULT_WORKDIR, draft_plan, inspect_source, load_workdir_source, split_issues
+from .cli import DEFAULT_WORKDIR, EXPECTED, draft_plan, inspect_source, load_workdir_source, split_issues
 from .model import load_plan
 from .runtime import Registry, build_server, run
 
@@ -156,6 +158,21 @@ async def smith_check(
     results = await asyncio.to_thread(run_check, _paths(project), writes)
     return [dataclasses.asdict(r) for r in results]
 
+
+def _explained(fn):
+    """Turn expected failures into ToolError: the SDK hides any other exception's message from the agent."""
+
+    @functools.wraps(fn)
+    async def call(*args, **kwargs):
+        try:
+            return await fn(*args, **kwargs)
+        except EXPECTED as e:
+            raise ToolError(f"{type(e).__name__}: {e}") from e
+
+    return call
+
+
+tool.tools = [(_explained(fn), title, read_only) for fn, title, read_only in tool.tools]
 
 mcp = build_server(
     "mcpsmith",

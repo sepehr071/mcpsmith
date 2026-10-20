@@ -45,6 +45,7 @@ No API key needed: your coding agent is the designer.
   {"mcpServers": {"mcpsmith": {"command": "uvx", "args": ["mcpsmith", "mcp"]}}}
   ```
   Tools: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check` (paths absolute).
+  MCP clients start servers without your shell's proxy variables; behind a proxy, add `"env": {"HTTPS_PROXY": "http://127.0.0.1:8080"}` so `smith_inspect` can fetch specs.
 - Skills: `skills/build-mcp-server` (the whole workflow) and `skills/design-mcp-tools` (design checklist). `AGENTS.md` points other agents (Codex, Cursor, Gemini CLI) at them.
 
 Then ask: "Build an MCP server for this OpenAPI file; users should be able to find pets and check stock."

@@ -148,3 +148,10 @@ async def test_server_tools(client, spec, tmp_path):
     out = tmp_path / "out"
     r = await call(client, "smith_generate", {"workdir": wd, "out": str(out)})
     assert r["files"] > 5 and (out / "pyproject.toml").exists()
+
+
+@pytest.mark.anyio
+async def test_server_errors_reach_the_agent(tmp_path):
+    async with Client(server.mcp) as c:
+        result = await c.call_tool("smith_draft", {"workdir": str(tmp_path / "missing")})
+    assert result.is_error and "FileNotFoundError" in result.content[0].text and "source.json" in result.content[0].text
