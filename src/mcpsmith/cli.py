@@ -1,0 +1,245 @@
+"""The `mcpsmith` command line: capture, inspect, draft, design, validate, generate, check, guide, mcp."""
+
+from __future__ import annotations
+
+import argparse
+import dataclasses
+import json
+import sys
+from pathlib import Path
+
+import httpx
+import yaml
+
+from .model import Plan, Source, load_plan, load_source, save_plan, save_source
+
+DEFAULT_WORKDIR = ".mcpsmith"
+EXPECTED = (OSError, ValueError, RuntimeError, ImportError, httpx.HTTPError, yaml.YAMLError)
+
+
+# ---------- steps shared with the MCP server ----------
+
+
+def inspect_source(source: str, workdir: Path, hosts: list[str] | None, budget: int) -> tuple[Source, Path, Path, str]:
+    """Load an OpenAPI file or HAR; write source.json and digest.md into workdir."""
+    from .design import digest
+    from .importers import load
+
+    src = load(source, hosts=hosts or None)
+    workdir.mkdir(parents=True, exist_ok=True)
+    source_path, digest_path = workdir / "source.json", workdir / "digest.md"
+    save_source(src, source_path)
+    text = digest(src, budget=budget)
+    digest_path.write_text(text, encoding="utf-8", newline="\n")
+    return src, source_path, digest_path, text
+
+
+def load_workdir_source(workdir: Path) -> Source | None:
+    path = workdir / "source.json"
+    return load_source(path) if path.exists() else None
+
+
+def split_issues(issues) -> tuple[list[str], list[str]]:
+    """Format design Issues as 'LEVEL where: message' lines: (errors, warnings)."""
+    errors = [f"ERROR {i.where}: {i.message}" for i in issues if i.level == "error"]
+    warnings = [f"WARNING {i.where}: {i.message}" for i in issues if i.level != "error"]
+    return errors, warnings
+
+
+def draft_plan(workdir: Path, name: str | None, force: bool) -> Path:
+    from .design import draft
+
+    plan_path = workdir / "plan.yaml"
+    if plan_path.exists() and not force:
+        raise ValueError(f"{plan_path} already exists (use --force to overwrite it)")
+    source = load_source(workdir / "source.json")
+    save_plan(draft(source, name), plan_path)
+    return plan_path
+
+
+# ---------- commands ----------
+
+
+def _flags(args) -> str:
+    return "" if args.workdir == DEFAULT_WORKDIR else f" -w {args.workdir}"
+
+
+def cmd_capture(args) -> int:
+    from .capture import record
+
+    out = record(args.url, Path(args.output), args.host or None)
+    print(f"saved {out}\nnext: mcpsmith inspect {out}")
+    return 0
+
+
+def cmd_inspect(args) -> int:
+    src, source_path, digest_path, _ = inspect_source(args.source, Path(args.workdir), args.host, args.budget)
+    auth = ", ".join(f"{a.name} ({a.type})" for a in src.auth) or "none"
+    print(f"{src.title}: {len(src.endpoints)} endpoints, auth: {auth}")
+    print(f"wrote {source_path}\nwrote {digest_path}")
+    print(f"next: mcpsmith draft{_flags(args)}   (or `mcpsmith design{_flags(args)}` to let an LLM write the plan)")
+    return 0
+
+
+def cmd_draft(args) -> int:
+    plan_path = draft_plan(Path(args.workdir), args.name, args.force)
+    plan = load_plan(plan_path)
+    print(f"wrote {plan_path} ({len(plan.tools)} tools)")
+    print(f"next: edit it (see `mcpsmith guide`), then `mcpsmith validate{_flags(args)}`")
+    return 0
+
+
+def cmd_design(args) -> int:
+    from .design.llm import design
+
+    workdir = Path(args.workdir)
+    plan_path = workdir / "plan.yaml"
+    start = load_plan(plan_path) if plan_path.exists() else None
+    plan = design(load_source(workdir / "source.json"), args.goal, args.provider, args.model, start)
+    save_plan(plan, plan_path)
+    print(f"wrote {plan_path}: " + ", ".join(t.name for t in plan.tools))
+    print(f"next: mcpsmith validate{_flags(args)}")
+    return 0
+
+
+def _validated(args) -> tuple[Plan, Source | None, list[str]]:
+    """Load the plan, validate it, print warnings; return (plan, source, errors)."""
+    from .design import validate
+
+    workdir = Path(args.workdir)
+    plan = load_plan(args.plan or workdir / "plan.yaml")
+    source = load_workdir_source(workdir)
+    errors, warnings = split_issues(validate(plan, source))
+    for line in warnings:
+        print(line)
+    return plan, source, errors
+
+
+def cmd_validate(args) -> int:
+    _, _, errors = _validated(args)
+    for line in errors:
+        print(line)
+    if not errors:
+        print("ok")
+    return 1 if errors else 0
+
+
+def cmd_generate(args) -> int:
+    from .codegen import generate
+
+    plan, source, errors = _validated(args)
+    if errors:
+        for line in errors:
+            print(line)
+        print("not generated: fix the errors above", file=sys.stderr)
+        return 1
+    out = Path(args.output or plan.name)
+    files = generate(plan, out, source, force=args.force)
+    print(f"generated {len(files)} files in {out}")
+    print(f"next: cd {out} && uv run pytest\n      mcpsmith check {out}")
+    return 0
+
+
+def cmd_check(args) -> int:
+    from .check import run
+
+    results = run(Path(args.project), writes=args.writes)
+    if args.json:
+        print(json.dumps([dataclasses.asdict(r) for r in results], ensure_ascii=False, indent=1))
+        return 0 if all(r.ok for r in results) else 1
+    for r in results:
+        if r.skipped:
+            print(f"SKIP {r.tool}  changes data on the live API; add --writes to call it")
+        elif r.ok:
+            empty = f"  empty: {', '.join(r.empty_fields)}" if r.empty_fields else ""
+            print(f"OK   {r.tool}  {r.chars} chars{empty}")
+        else:
+            print(f"FAIL {r.tool}  {r.error}")
+    return 0 if all(r.ok for r in results) else 1
+
+
+def cmd_guide(args) -> int:
+    from .design import guide
+
+    print(guide())
+    return 0
+
+
+def cmd_mcp(args) -> int:
+    from .server import main as serve
+
+    serve()
+    return 0
+
+
+# ---------- parser ----------
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="mcpsmith", description="Turn an OpenAPI file or a recorded website session into a curated MCP server."
+    )
+    sub = p.add_subparsers(dest="command", required=True, metavar="command")
+
+    def command(name, fn, help, workdir=True):
+        sp = sub.add_parser(name, help=help, description=help)
+        sp.set_defaults(fn=fn)
+        if workdir:
+            sp.add_argument(
+                "-w", "--workdir", default=DEFAULT_WORKDIR, help=f"working directory (default {DEFAULT_WORKDIR})"
+            )
+        return sp
+
+    sp = command("capture", cmd_capture, "record a browsing session of a website to a HAR file", workdir=False)
+    sp.add_argument("url")
+    sp.add_argument("-o", "--output", default="site.har")
+    sp.add_argument("--host", action="append", help="keep only traffic to this host (repeatable)")
+
+    sp = command("inspect", cmd_inspect, "read an OpenAPI file or HAR (path or URL); write source.json and digest.md")
+    sp.add_argument("source", help="OpenAPI/Swagger file or HAR, path or URL")
+    sp.add_argument("--host", action="append", help="keep only traffic to this host (HAR; repeatable)")
+    sp.add_argument("--budget", type=int, default=60000, help="digest size limit in characters (default 60000)")
+
+    sp = command("draft", cmd_draft, "write a heuristic starting plan.yaml from source.json")
+    sp.add_argument("--name", help="project name, e.g. petstore-mcp")
+    sp.add_argument("--force", action="store_true", help="overwrite an existing plan.yaml")
+
+    sp = command("design", cmd_design, "let an LLM (API key needed) design or refine plan.yaml")
+    sp.add_argument("--goal", default="", help="what the server is for")
+    sp.add_argument("--provider", choices=["anthropic", "openai", "openrouter", "ollama"], default="anthropic")
+    sp.add_argument("--model")
+
+    sp = command("validate", cmd_validate, "check plan.yaml; exit 1 on errors")
+    sp.add_argument("--plan", help="plan file (default <workdir>/plan.yaml)")
+
+    sp = command("generate", cmd_generate, "validate plan.yaml, then write the MCP server project")
+    sp.add_argument("--plan", help="plan file (default <workdir>/plan.yaml)")
+    sp.add_argument("-o", "--output", help="output directory (default ./<plan name>)")
+    sp.add_argument("--force", action="store_true", help="write into an existing directory")
+
+    sp = command("check", cmd_check, "call every tool of a generated project live; exit 1 on failures", workdir=False)
+    sp.add_argument("project")
+    sp.add_argument("--json", action="store_true")
+    sp.add_argument("--writes", action="store_true", help="also call tools that change data (read_only: false)")
+
+    command("guide", cmd_guide, "print the tool-design rules for plan.yaml", workdir=False)
+    command("mcp", cmd_mcp, "run the mcpsmith MCP server on stdio", workdir=False)
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Digests contain Persian text; the Windows console default would raise on it.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+    args = build_parser().parse_args(argv)
+    try:
+        return args.fn(args)
+    except EXPECTED as e:
+        print(f"mcpsmith: error: {e}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

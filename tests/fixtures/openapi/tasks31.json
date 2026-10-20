@@ -1,0 +1,101 @@
+{
+  "openapi": "3.1.0",
+  "info": {"title": "Tasks API", "description": "Tasks with nested subtasks.", "version": "1.0.0"},
+  "servers": [
+    {
+      "url": "https://{region}.tasks.example.com/{version}",
+      "variables": {"region": {"default": "eu", "enum": ["eu", "us"]}, "version": {"default": "v1"}}
+    }
+  ],
+  "security": [{"bearerAuth": []}],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {"type": "http", "scheme": "bearer"},
+      "keyQuery": {"type": "apiKey", "in": "query", "name": "key"},
+      "session": {"type": "apiKey", "in": "cookie", "name": "sid"},
+      "oauth": {"type": "oauth2", "flows": {}}
+    },
+    "parameters": {
+      "TaskId": {"name": "taskId", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "Limit": {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 20}, "example": 5}
+    },
+    "schemas": {
+      "Task": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "format": "uuid"},
+          "title": {"type": "string"},
+          "due": {"type": ["string", "null"], "format": "date"},
+          "priority": {"$ref": "#/components/schemas/Priority"},
+          "subtasks": {"type": "array", "items": {"$ref": "#/components/schemas/Task"}}
+        }
+      },
+      "Priority": {"type": "string", "enum": ["high", "low"]},
+      "NewTask": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {"title": {"type": "string"}, "done": {"type": "boolean"}}
+      }
+    }
+  },
+  "paths": {
+    "/tasks": {
+      "get": {
+        "operationId": "listTasks",
+        "summary": "List tasks",
+        "parameters": [
+          {"$ref": "#/components/parameters/Limit"},
+          {"name": "status", "in": "query", "schema": {"type": "string", "enum": ["open", "done"]}}
+        ],
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {"type": "array", "items": {"$ref": "#/components/schemas/Task"}}
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createTask",
+        "security": [{"keyQuery": []}, {"session": []}],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/NewTask"},
+              "examples": {"simple": {"value": {"title": "Buy milk"}}}
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "created",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Task"}, "example": {"id": "t1"}}}
+          }
+        }
+      },
+      "options": {"responses": {"200": {"description": "cors"}}}
+    },
+    "/tasks/{taskId}": {
+      "parameters": [{"$ref": "#/components/parameters/TaskId"}],
+      "get": {
+        "security": [],
+        "parameters": [{"name": "X-Trace", "in": "header", "schema": {"type": "string"}}],
+        "responses": {
+          "default": {
+            "description": "the task",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Task"}}}
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateTask",
+        "servers": [{"url": "https://write.tasks.example.com/v1"}],
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/NewTask"}}}},
+        "responses": {"204": {"description": "updated"}}
+      }
+    }
+  }
+}

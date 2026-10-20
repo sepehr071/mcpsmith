@@ -1,0 +1,46 @@
+import json
+import os
+from pathlib import Path
+
+import httpx
+import pytest
+from mcp import Client
+
+from __PACKAGE__.server import api, mcp
+
+FIXTURES = Path(__file__).parent / "fixtures"
+AUTH_ENV = __AUTH_ENV__
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def fresh_http_client(monkeypatch):
+    """The HTTP client is bound to one event loop; each test gets a new loop."""
+    monkeypatch.setattr(api, "RETRY_DELAY", 0)
+    monkeypatch.setattr(api, "JITTER", (0, 0))
+    api.set_transport(None)
+    yield
+    api.set_transport(None)
+
+
+@pytest.fixture
+def replay(monkeypatch):
+    """Answer every request with the saved response tests/fixtures/<name>.json."""
+
+    def use(name: str) -> None:
+        body = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+        api.set_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
+        if AUTH_ENV and not os.environ.get(AUTH_ENV):
+            monkeypatch.setenv(AUTH_ENV, "test")
+
+    return use
+
+
+@pytest.fixture
+async def client():
+    async with Client(mcp) as c:
+        yield c

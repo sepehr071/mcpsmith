@@ -1,0 +1,30 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.sepehr071/mcpsmith",
+  "title": "mcpsmith",
+  "description": "Build curated MCP servers from an OpenAPI file or a recorded website; your agent designs the tools.",
+  "repository": {
+    "url": "https://github.com/sepehr071/mcpsmith",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/sepehr071/mcpsmith",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "mcpsmith",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp"
+        }
+      ]
+    }
+  ]
+}

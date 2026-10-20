@@ -1,0 +1,17 @@
+{
+  "name": "mcpsmith",
+  "description": "Build curated, tested MCP servers from an OpenAPI file or a recorded website session.",
+  "owner": {
+    "name": "Sepehr Radmard",
+    "email": "sepehrr80@gmail.com",
+    "url": "https://github.com/sepehr071"
+  },
+  "plugins": [
+    {
+      "name": "mcpsmith",
+      "source": "./",
+      "description": "Skills and an MCP server that guide your coding agent from an OpenAPI file or HAR to a tested MCP server project.",
+      "category": "development"
+    }
+  ]
+}

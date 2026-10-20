@@ -1,0 +1,60 @@
+[project]
+name = "mcpsmith"
+version = "0.1.0"
+description = "Turn an OpenAPI file or a recorded website session into a curated, tested MCP server, with an LLM designing the tools."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Sepehr Radmard", email = "sepehrr80@gmail.com" }]
+requires-python = ">=3.10"
+keywords = ["mcp", "model-context-protocol", "openapi", "har", "code-generation", "llm", "agents"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Code Generators",
+]
+dependencies = [
+    "mcp>=2.2,<3",
+    "httpx>=0.27",
+    "pyyaml>=6",
+]
+
+[project.optional-dependencies]
+# Chrome TLS/HTTP2 fingerprint for sites that block library clients (generated website servers use it).
+stealth = ["httpx-curl-cffi>=0.1.5", "curl-cffi>=0.16.3"]
+# `mcpsmith capture`: record a browsing session to HAR.
+capture = ["playwright>=1.45"]
+
+[project.urls]
+Homepage = "https://github.com/sepehr071/mcpsmith"
+Issues = "https://github.com/sepehr071/mcpsmith/issues"
+
+[project.scripts]
+mcpsmith = "mcpsmith.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "anyio>=4", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not live'"
+markers = ["live: calls real upstream APIs or LLMs (run with -m live)"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["tests/fixtures"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
