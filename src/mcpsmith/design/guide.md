@@ -86,17 +86,20 @@ Raw API responses waste the agent's context and bury the answer. For every tool:
 
 Plan: `name` (e.g. `petstore-mcp`), `title`, `description` (<= 100 chars), `instructions`, `prefix` (tool name
 prefix, e.g. `pet`), `version`, `base_url`, `env_prefix` (upper case, `^[A-Z][A-Z0-9_]*$`, ending in `_MCP`; `auth.env` must start with it; e.g.
-`PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic, param, env}`),
-`impersonate`, `concurrency`, `cache_ttl`, `author`, `repository`, `tools`.
+`PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic|browser, param, env, login_path}`;
+`browser` and `login_path` only work in the hub, not in exported servers),
+`impersonate`, `concurrency`, `cache_ttl`, `timezone` (IANA name for date transforms; empty = system local),
+`author`, `repository`, `tools`.
 
 Tool: `name`, `title`, `description`, `endpoint` (an endpoint id from the digest), `args`, `fixed`
 (target -> constant), `output`, `read_only`, `example` (arg name -> value).
 
 ToolArg: `name` (Python identifier, not a keyword), `type` (string|integer|number|boolean|array|object),
 `description`, `required`, `default`, `enum`, `map` (friendly value -> wire value), `minimum`, `maximum`,
-`to` (target).
+`to` (target), `transform` (input transform name, e.g. `jalali->unix`; hub only).
 
-Output: `root`, `fields`, `max_items`, `clip`.
+Output: `root`, `fields`, `max_items`, `clip`, `transforms` (output name in `fields` -> transform name, e.g.
+`unix->date`; hub only).
 
 Target syntax (`ToolArg.to`, keys of `Tool.fixed`): `path.<name>`, `query.<name>`, `header.<name>`,
 `cookie.<name>`, `body` (the whole JSON body is the value), `body.<a.b.c>` (nested key in the JSON body).

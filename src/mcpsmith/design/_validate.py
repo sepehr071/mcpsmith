@@ -19,9 +19,12 @@ from ..model import (
     check_prefix,
     check_repository,
     check_target,
+    check_timezone,
     check_tool_name,
+    check_transform,
     endpoint_method,
 )
+from ..runtime import transforms
 
 PATH_PARAM = re.compile(r"\{([^}]+)\}")
 
@@ -113,6 +116,9 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
                 f"{plan.auth.env!r} must start with '{plan.env_prefix}_' so a plan cannot read other credentials; "
                 f"rename it, e.g. '{plan.env_prefix}_TOKEN'.",
             )
+    check("plan.timezone", check_timezone, plan.timezone)
+    if plan.auth and plan.auth.type == "browser":
+        warn("plan.auth", "browser auth needs the hub's Chrome; switch to token auth before exporting.")
     if len(plan.tools) > 20:
         warn("plan.tools", f"{len(plan.tools)} tools; merge near-duplicates and drop noise to stay at 20 or fewer.")
 
@@ -136,6 +142,8 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
                 err(aw, "duplicate arg name; give each arg a distinct name.")
             names.add(arg.name)
             check(aw, check_target, arg.to)
+            if arg.transform is not None:
+                check(aw, lambda v: check_transform(v, transforms.INPUT_NAMES), arg.transform)
             if arg.required and arg.default is not None:
                 err(aw, "required arg has a default; drop the default or make the arg optional.")
             if arg.map and arg.enum and set(arg.enum) - set(arg.map):
@@ -144,6 +152,11 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
                 err(aw, f"default {arg.default!r} is not a key of map; use one of {list(arg.map)}.")
             if _nonfinite([arg.default, arg.enum, arg.map, arg.minimum, arg.maximum]):
                 err(aw, "NaN and infinity are not allowed in default, enum, map, minimum or maximum.")
+        for out, name in tool.output.transforms.items():
+            ow = f"{w}.output.transforms.{out}"
+            if out not in tool.output.fields:
+                err(ow, f"{out!r} is not in fields; transform a field you return, or add it to fields.")
+            check(ow, lambda v: check_transform(v, transforms.OUTPUT_NAMES), name)
         for key in tool.fixed:
             check(f"{w}.fixed", check_target, key)
         if _nonfinite([tool.fixed, tool.example]):

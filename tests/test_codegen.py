@@ -288,6 +288,12 @@ def test_generate_refuses_invalid_plan(tmp_path, plan, needle):
     assert not (tmp_path / "out").exists()
 
 
+def test_generate_refuses_browser_auth(tmp_path):
+    plan = PLAN.model_copy(update={"auth": AuthScheme(name="b", type="browser", login_path="/Account/Login")})
+    with pytest.raises(ValueError, match="browser"):
+        generate(plan, tmp_path / "out")
+
+
 def test_dates_become_strings(tmp_path):
     day = datetime.date(2024, 1, 2)
     plan = _tool_plan(args=[_arg(name="since", default=day, to="query.since")], example={"since": day})

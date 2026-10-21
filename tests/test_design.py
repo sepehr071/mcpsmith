@@ -200,6 +200,11 @@ def _errors(plan, source=None):
         (lambda p: p.tools[0].fixed.update({"path.productId": 1}), "more than once"),
         (lambda p: setattr(p.tools[0], "endpoint", "DELETE /api/v1/products/{productId}"), "read_only"),
         (lambda p: setattr(p.tools[0], "example", {"product_id": float("nan")}), "NaN"),
+        (lambda p: setattr(p.tools[0].args[0], "transform", "nope"), "unknown transform"),
+        (lambda p: setattr(p.tools[0].args[0], "transform", "unix->date"), "unknown transform"),  # output-only name
+        (lambda p: setattr(p.tools[0].output, "transforms", {"x": "unix->date"}), "not in fields"),
+        (lambda p: p.tools[0].output.__dict__.update(fields={"x": "a"}, transforms={"x": "nope"}), "unknown transform"),
+        (lambda p: setattr(p, "timezone", "Mars/Base"), "timezone"),
         (lambda p: p.tools[0].args[0].__dict__.update(maximum=float("inf")), "NaN"),
         (lambda p: p.tools[0].fixed.update({"query.x": [1, {"y": float("-inf")}]}), "NaN"),
         (lambda p: p.tools[0].args[0].__dict__.update(required=False, map={"a": float("nan")}), "NaN"),
@@ -210,6 +215,21 @@ def test_validate_errors(mutate, needle):
     mutate(plan)
     errors = _errors(plan)
     assert errors and any(needle in e.message for e in errors), errors
+
+
+def test_browser_auth_warns():
+    plan = valid_plan()
+    plan.auth = AuthScheme(name="b", type="browser", login_path="/Account/Login")
+    issues = validate(plan)
+    assert not [i for i in issues if i.level == "error"]
+    assert any(i.level == "warning" and "token" in i.message for i in issues)
+
+
+def test_plan_schema_and_new_fields():
+    assert "transform" in Plan.model_json_schema()["$defs"]["ToolArg"]["properties"]
+    plan = valid_plan()
+    plan.timezone = "Asia/Tehran"
+    assert not _errors(plan)
 
 
 def test_validate_source_method_must_match_read_only():

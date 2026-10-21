@@ -29,6 +29,10 @@ def generate(plan: Plan, out: Path, source: Source | None = None, force: bool = 
     (unless `force`)."""
     if errors := [f"{i.where}: {i.message}" for i in validate(plan, source) if i.level == "error"]:
         raise ValueError("Plan is not valid:\n- " + "\n- ".join(errors))
+    if plan.auth and plan.auth.type == "browser":
+        raise ValueError(
+            "auth type 'browser' only works in the hub; switch auth to token (bearer/header/cookie) to export."
+        )
     plan = Plan.model_validate(plan.model_dump(mode="json"))  # dates and other YAML types become plain JSON values
     out = Path(out)
     if out.exists() and any(out.iterdir()) and not force:
