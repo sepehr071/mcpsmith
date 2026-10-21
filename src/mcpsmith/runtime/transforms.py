@@ -28,7 +28,7 @@ OUTPUT_NAMES = frozenset(
 NAMES = INPUT_NAMES | OUTPUT_NAMES
 
 # Persian (U+06F0-06F9) and Arabic-Indic (U+0660-0669) digits to Latin
-_DIGITS = {c: str(i) for i in range(10) for c in (chr(0x6F0 + i), chr(0x660 + i))}
+_DIGITS = {ord(c): str(i) for i in range(10) for c in (chr(0x6F0 + i), chr(0x660 + i))}
 _CUMULATIVE_DAYS = (0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334)
 _YEARS = (1300, 1500)  # Jalali years the arithmetic is trusted for
 _NOWRUZ_1404 = date(2025, 3, 21)

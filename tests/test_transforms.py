@@ -27,6 +27,15 @@ def test_unix():
     assert transform_in("date->unix", "2026-10-20") == int(datetime(2026, 10, 20, tzinfo=local).timestamp())
 
 
+def test_persian_digits_gregorian_and_number():
+    persian = "".join(chr(0x6F0 + int(c)) if c.isdigit() else c for c in "2026-10-20")
+    arabic = "".join(chr(0x660 + int(c)) if c.isdigit() else c for c in "2026-10-20")
+    assert persian != "2026-10-20" and arabic != "2026-10-20"
+    assert transform_in("date->unix", persian, tz="UTC") == 1792454400
+    assert transform_in("date->unix", arabic, tz="UTC") == 1792454400
+    assert transform_in("toman->rial", "".join(chr(0x6F0 + int(c)) for c in "125")) == 1250
+
+
 def test_other_inputs():
     assert transform_in("toman->rial", 1250) == 12500
     assert transform_in("int->str", 7) == "7"
