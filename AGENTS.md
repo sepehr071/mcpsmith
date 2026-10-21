@@ -10,7 +10,7 @@ Ask the user which tasks the server should support, then:
 
 1. Pick the source (apps and programs: only software the user owns or is authorized to analyze):
    - Website only: `mcpsmith capture <url> -o site.har --host <host>` (user browses, closes the browser), or use a DevTools HAR export. For a logged-in site use the hub (below).
-   - Android: `mcpsmith app-android <apk> --base-url <url>` lists candidate Retrofit classes; add `--class NAME` to write `source.json` (or `--source FILE` for an already decompiled class). Needs `jadx` on PATH (free) or REA's JADX jar (`REA_JADX_MCP_JAR`). No declared interface: the error says what to do (record traffic, or the sign-in provider for the app's request signing: `auth: {type: signin, provider: ...}`).
+   - Android: `mcpsmith app-android <apk> --base-url <url>` lists candidate Retrofit classes; add `--class NAME` to write `source.json` (or `--source FILE` for an already decompiled class). Needs `jadx` on PATH (free) or REA's JADX jar (`REA_JADX_MCP_JAR`). A one-second APK triage runs first (Flutter, React Native, no Retrofit: no decompile). No declared interface: the error says what to do (record traffic, or the sign-in provider for the app's request signing: `auth: {type: signin, provider: ...}`).
    - Electron/JS: `mcpsmith app-js <dir|app.asar|file> --base-url <url>`.
    - Desktop program: `mcpsmith app-desktop` prints the mitmproxy steps for the user to run; `mcpsmith app-desktop <capture.har> --host <host>` imports the HAR.
    - App endpoints are unverified: `mcpsmith probe` calls the GET ones live (`--writes` for the rest, only after the user agrees, `--limit N`). An endpoint with no method cannot be used until the plan sets it.

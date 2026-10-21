@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -226,18 +227,47 @@ def test_search_pages_through_every_result(monkeypatch, apk):
     assert seen[:3] == [(0, jadx.MAX_SCAN), (2, jadx.MAX_SCAN), (4, jadx.MAX_SCAN)]
 
 
-def test_no_candidates_is_a_dead_end_that_names_a_known_signer(monkeypatch, apk):
-    def handler(tool, args):
-        hit = args["search_term"] == "SmartHomeRc4"
-        return json.dumps({"items": [{"fqn": "x.Y"}] if hit else [], "max_scan_reached": False})
-
-    fake_jadx(monkeypatch, handler)
-    with pytest.raises(RuntimeError, match="signs its requests itself.*provider: xiaomi"):
-        jadx.find_api_classes(apk)
+def test_no_candidates_is_a_dead_end(monkeypatch, apk):
     fake_jadx(monkeypatch, lambda t, a: json.dumps({"items": [], "max_scan_reached": False}))
     with pytest.raises(RuntimeError, match="mcpsmith browser") as e:
         jadx.find_api_classes(apk)
     assert "signin" not in str(e.value)
+
+
+def zip_apk(path, files: dict[str, bytes]):
+    with zipfile.ZipFile(path, "w") as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+    return path
+
+
+RETROFIT_DEX = b"dex\n035\x00 Lretrofit2/http/GET; "
+
+
+@pytest.mark.parametrize(
+    ("files", "needle"),
+    [
+        ({"lib/arm64-v8a/libflutter.so": b"", "classes.dex": RETROFIT_DEX}, "Flutter"),
+        ({"assets/index.android.bundle": android.HERMES_MAGIC + b"..", "classes.dex": b""}, "Hermes bytecode"),
+        ({"assets/index.android.bundle": b"var a=1;", "classes.dex": b""}, "mcpsmith app-js bundle.js"),
+        ({"classes.dex": b"dex Lcom/x/Util; "}, "record its traffic"),
+        ({"classes.dex": b"x", "classes2.dex": b"Lcom/xiaomi/smarthome/Net; "}, "provider: xiaomi"),
+    ],
+)
+def test_triage_answers_before_any_decompile(monkeypatch, tmp_path, files, needle):
+    monkeypatch.setattr(jadx, "_tree", lambda *a: pytest.fail("decompiled"))
+    monkeypatch.setattr(jadx, "_run", lambda *a: pytest.fail("decompiled"))
+    with pytest.raises(RuntimeError, match=needle):
+        jadx.find_api_classes(zip_apk(tmp_path / "app.apk", files))
+
+
+def test_triage_reads_retrofit_even_when_renamed(tmp_path):
+    renamed = {
+        "classes.dex": b"... HTTP method annotation is required (e.g., @GET, @POST, etc.). Lcom/xiaomi/smarthome/A;"
+    }
+    t = android.triage(zip_apk(tmp_path / "a.apk", renamed))
+    assert t == android.Triage("", True, ("Xiaomi Mi Home", "xiaomi"))
+    assert android.triage(tmp_path / "missing.apk") == android.Triage()
 
 
 def test_search_that_hit_the_scan_cap_is_an_error(monkeypatch, apk):

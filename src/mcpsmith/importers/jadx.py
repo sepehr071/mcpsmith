@@ -160,22 +160,27 @@ def find_api_classes(apk: Path, jar: str | None = None) -> list[str]:
 
 
 def api_classes_and_signer(apk: Path, jar: str | None = None) -> tuple[list[str], tuple[str, str] | None]:
-    """find_api_classes, plus (app, provider) of a known request-signing SDK in the app, else None."""
+    """find_api_classes, plus (app, provider) of a known request-signing SDK in the app, else None.
+
+    A seconds-long triage of the APK runs first: an app built with Flutter or React Native, or one without Retrofit,
+    gets its advice without the minutes-long decompile.
+    """
+    t = android.triage(apk)
+    if t.framework:
+        raise RuntimeError(android.framework_advice(t.framework, t.signer))
+    if t.retrofit is False:
+        raise RuntimeError(android.dead_end(t.signer))
+    signer = t.signer
     if (tree := _tree(apk, jar)) is not None:
         classes = _classes(tree)
         found = [n for n, p in classes.items() if any(term in _read(p) for term in API_STRINGS)]
-        signer = android.known_signer(classes)
+        signer = signer or android.known_signer(classes)
     else:
 
-        async def work(call: Call) -> tuple[list[str], tuple[str, str] | None]:
-            found = [n for term in API_STRINGS for n in await _search(call, term)]
-            for app, provider, fragments in android.KNOWN_SIGNERS:  # code that names the SDK's classes
-                for fragment in fragments:
-                    if await _search(call, fragment):
-                        return found, (app, provider)
-            return found, None
+        async def work(call: Call) -> list[str]:
+            return [n for term in API_STRINGS for n in await _search(call, term)]
 
-        found, signer = _run(apk, jar, work)
+        found = _run(apk, jar, work)
     if not found:
         raise RuntimeError(android.dead_end(signer))
     return sorted(dict.fromkeys(found)), signer

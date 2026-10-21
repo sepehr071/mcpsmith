@@ -9,7 +9,10 @@ names them again.
 from __future__ import annotations
 
 import re
+import zipfile
 from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from mcpsmith.importers.har import _is_credential, _scrub, cap_notes, note_text
@@ -439,6 +442,65 @@ def resolve_annotations(builder_java: str) -> dict[str, str]:
 KNOWN_SIGNERS = [
     ("Xiaomi Mi Home", "xiaomi", ("com.xiaomi.smarthome", "SmartHomeRc4", "com.xiaomi.youpin.login")),
 ]
+
+
+RETROFIT_MARKS = (b"Lretrofit2/", b"HTTP method annotation is required")  # the second survives class renaming
+HERMES_MAGIC = b"\xc6\x1f\xbc\x03"
+DEX = re.compile(r"classes\d*\.dex")
+
+
+@dataclass
+class Triage:
+    """What the APK is, read from its zip listing and dex bytes in seconds, before any decompiling."""
+
+    framework: str = ""  # "flutter", "hermes", "react-native", or "" (plain Java/Kotlin)
+    retrofit: bool | None = None  # None: not checked (not a readable APK)
+    signer: tuple[str, str] | None = None
+
+
+def triage(apk: Path) -> Triage:
+    try:
+        z = zipfile.ZipFile(apk)
+    except (zipfile.BadZipFile, OSError):
+        return Triage()
+    with z:
+        names = set(z.namelist())
+        framework = ""
+        if any(n.startswith("lib/") and n.endswith("/libflutter.so") for n in names):
+            framework = "flutter"
+        elif "assets/index.android.bundle" in names:
+            with z.open("assets/index.android.bundle") as f:
+                framework = "hermes" if f.read(4) == HERMES_MAGIC else "react-native"
+        dex = sorted(n for n in names if DEX.fullmatch(n))
+        retrofit, signer = False, None
+        for name in dex:  # one file at a time: big apps ship 100 MB of dex
+            data = z.read(name)
+            retrofit = retrofit or any(m in data for m in RETROFIT_MARKS)
+            signer = signer or next(
+                (
+                    (app, provider)
+                    for app, provider, fragments in KNOWN_SIGNERS
+                    if any(f.replace(".", "/").encode() in data for f in fragments)  # dex holds names as a/b/C
+                ),
+                None,
+            )
+    return Triage(framework, retrofit if dex else None, signer)
+
+
+def framework_advice(framework: str, signer: tuple[str, str] | None = None) -> str:
+    """What to do for an app built with a framework that has no Java HTTP interface to read."""
+    record = (
+        "Record its traffic instead: proxy the phone through mitmproxy (`mcpsmith app-desktop` prints the steps), "
+        "then import the HAR with `mcpsmith app-desktop capture.har`."
+    )
+    text = {
+        "flutter": f"the app is Flutter (Dart compiled to native code): no Java HTTP interface to read. {record}",
+        "hermes": f"the app is React Native compiled to Hermes bytecode: no readable JS or Java interface. {record}",
+        "react-native": "the app is React Native: its API calls are in the JS bundle. Extract "
+        "assets/index.android.bundle from the APK (it is a zip), save it as bundle.js, then run "
+        "`mcpsmith app-js bundle.js --base-url URL`.",
+    }[framework]
+    return text + (" " + signer_note(signer) if signer else "")
 
 
 def known_signer(class_names) -> tuple[str, str] | None:
