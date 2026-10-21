@@ -31,6 +31,12 @@ HEADERS_KEY = re.compile(r"\bheaders\s*:\s*\{")
 HEADER_PAIR = re.compile(r"""(?:(['"])([\w-]+)\1|([\w-]+))\s*:\s*(['"])((?:\\.|(?!\4).)*)\4""")
 
 
+# shortcut: a comment is only recognised after whitespace, so "http://" and "**/*.js" in strings survive; a comment
+# glued to code (`x;//c`) stays visible. Strings are not tracked: a regex literal's quote would desync the scan.
+COMMENT = re.compile(r"(?<!\S)(?://[^\n]*|/\*.*?\*/)", re.S)
+ASSIGN_WINDOW = 3000  # how far above a call a variable's assignment is looked for
+
+
 class _Skip(Exception):
     pass
 
@@ -47,6 +53,7 @@ def read_app(
     app's dependencies, not its own code, and is left out. Files past the caps are dropped and counted in `notes`.
     """
     notes = notes if notes is not None else []
+    skipped: list[tuple[str, int]] = []
     path = Path(path)
     if path.is_dir():
         found = sorted(
@@ -55,33 +62,43 @@ def read_app(
             if p.is_file() and p.suffix in EXTS | {".map"} and "node_modules" not in p.relative_to(path).parts
         )
         cands = [(n, p.stat().st_size, p.read_bytes if p.stat().st_size <= max_bytes else None) for n, p in found]
-        raw = _cap(cands, notes, max_files, max_bytes)
+        raw = _cap(cands, notes, skipped, max_files, max_bytes)
     elif path.suffix == ".asar":
-        raw = _cap(_asar_entries(path, max_bytes), notes, max_files, max_bytes)
+        raw = _cap(_asar_entries(path, max_bytes), notes, skipped, max_files, max_bytes)
     elif path.is_file():
-        raw = _cap([(path.name, path.stat().st_size, path.read_bytes)], notes, max_files, max_bytes)
+        raw = _cap([(path.name, path.stat().st_size, path.read_bytes)], notes, skipped, max_files, max_bytes)
     else:
         raise ValueError(f"{path}: no such file or directory")
     texts = {n: b.decode("utf-8-sig", errors="replace") for n, b in raw.items() if not n.endswith(".map")}
     out: dict[str, str] = {}
+    covered: set[str] = set()
     for name, text in raw.items():
         if name.endswith(".map"):
             if sources := _map_sources(name, text.decode("utf-8-sig", errors="replace"), notes):
                 texts.pop(name[:-4], None)
+                covered.add(name[:-4])
                 for logical, content in sources.items():
                     out[f"{name}:{logical}" if logical in out else logical] = content
     for name, text in texts.items():
         out[f"{name}:bundle" if name in out else name] = text
+    for name, size in skipped:
+        if name.endswith(".map"):
+            tail = "its original sources are not read"
+        elif name in covered:
+            tail = "its .map sources were read instead"
+        else:
+            tail = "not read, and no .map sources cover it"
+        notes.append(f"skipped {name}: {size} bytes is over the {max_bytes}-byte cap; {tail}")
     return out
 
 
-def _cap(cands, notes: list[str], max_files: int, max_bytes: int) -> dict[str, bytes]:
+def _cap(cands, notes: list[str], skipped: list[tuple[str, int]], max_files: int, max_bytes: int) -> dict[str, bytes]:
     if len(cands) > max_files:
         notes.append(f"dropped {len(cands) - max_files} files beyond the {max_files}-file cap")
     out = {}
     for name, size, read in cands[:max_files]:
         if read is None or size > max_bytes:
-            notes.append(f"skipped {name}: {size} bytes is over the {max_bytes}-byte cap")
+            skipped.append((name, size))
         else:
             out[name] = read()
     return out
@@ -160,12 +177,13 @@ def parse_sources(files: dict[str, str], base_url: str = "", title: str = "", ma
     found: list[Endpoint] = []
     dropped = 0
     for fname, text in files.items():
+        text = COMMENT.sub(_blank, text)  # a comment saying "fetch (like..." is not a call
         newlines = [m.start() for m in re.finditer("\n", text)]
         for pos, end, method, kind in sorted(_sites(text)):
             where = f"{fname}:{bisect.bisect(newlines, pos) + 1}"
             try:
                 args = _call_args(text[end : end + WINDOW])
-                ep = _endpoint(kind, method, args, where, schemes)
+                ep = _endpoint(kind, method, args, where, schemes, text[max(0, pos - ASSIGN_WINDOW) : pos])
             except _Skip as e:
                 notes.append(f"skipped {where}: {e}")
                 continue
@@ -265,7 +283,9 @@ def _clean(s: str) -> str:
     return _scrub(re.sub(r"//[^/\s@'\"`]*@", "//", s))
 
 
-def _endpoint(kind: str, method: str | None, args: list[str], where: str, schemes: dict[str, AuthScheme]) -> Endpoint:
+def _endpoint(
+    kind: str, method: str | None, args: list[str], where: str, schemes: dict[str, AuthScheme], before: str
+) -> Endpoint:
     rest = args[1:]  # `args` starts at the path: a helper's verb was already read from its first argument
     if kind == "fetch":
         opts = rest[0] if rest else None
@@ -279,7 +299,7 @@ def _endpoint(kind: str, method: str | None, args: list[str], where: str, scheme
             method = ""
         if method not in VERBS.split("|"):
             method = ""
-    path = _path(args[0] if args else "")
+    path = _path(_assigned(args[0], before) if args else "")
     base = ""
     if path.startswith(("http://", "https://")):
         u = urlsplit(path)
@@ -333,6 +353,32 @@ def _endpoint(kind: str, method: str | None, args: list[str], where: str, scheme
         count=0,
         verified=False,
     )
+
+
+def _blank(m: re.Match) -> str:
+    """A comment as spaces, newlines kept so offsets and line numbers hold."""
+    return re.sub(r"[^\n]", " ", m.group(0))
+
+
+def _assigned(arg: str, before: str) -> str:
+    """The literal a bare identifier was set to by its one `const|let|var` above the call, else `arg` unchanged.
+
+    shortcut: one level, a fixed window, no scope analysis; a second assignment in the window leaves it unresolved.
+    """
+    if not re.fullmatch(r"[A-Za-z_$][\w$]*", arg):
+        return arg
+    sets = list(re.finditer(rf"(?<![\w$.]){re.escape(arg)}\s*=(?![=>])", before))
+    if len(sets) != 1 or not re.search(r"\b(?:const|let|var)\s+$", before[: sets[0].start()]):
+        return arg
+    rest = before[sets[0].end() :].lstrip()
+    try:
+        if rest[:1] in ("'", '"', "`"):
+            end = _skip_string(rest, 0)
+            if rest[end:].lstrip()[:1] not in tuple("+-*/%.?([&|<>=!:"):
+                return rest[:end]
+    except _Skip:
+        pass
+    return arg
 
 
 def _path(arg: str) -> str:

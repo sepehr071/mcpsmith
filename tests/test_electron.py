@@ -150,6 +150,61 @@ def test_caps_are_reported(tmp_path):
     assert "dropped 3" in electron.parse_sources(many, max_endpoints=2).description
 
 
+def test_path_held_in_a_variable_is_resolved_once():
+    code = """
+function a(org) {
+  const one = `orgs/${org}/repos`
+  return this.request('GET', one)
+}
+function b() {
+  let twice = 'x/first'
+  twice = 'x/second'
+  return this.request('GET', twice)
+}
+function c(org) {
+  const tern = org ? 'a' : 'b'
+  return this.request('GET', tern)
+}
+function d() {
+  const plus = 'p/' + id
+  return this.request('GET', plus)
+}
+function e(param) {
+  return this.request('GET', param)
+}
+"""
+    s = electron.parse_sources({"v.js": code})
+    assert pairs(s) == {("GET", "/orgs/{org}/repos")}
+    for name in ("twice", "tern", "plus", "param"):
+        assert f"({name})" in s.description
+
+
+def test_comments_and_apostrophes_are_not_calls():
+    code = """
+/**
+ * we'll fetch (like a very active repo) in bulk
+ */
+// fetch ('also not a call
+const real = () => fetch('/v1/real', { method: 'GET' }) // it's fine
+"""
+    s = electron.parse_sources({"c.js": code})
+    assert pairs(s) == {("GET", "/v1/real")} and s.description == ""
+    assert s.endpoints[0].summary == "c.js:6"
+
+
+def test_oversize_note_says_whether_a_map_covered_it(tmp_path):
+    (tmp_path / "big.js").write_text("x" * 100, encoding="utf-8")
+    (tmp_path / "big.js.map").write_text(
+        json.dumps({"sources": ["s.ts"], "sourcesContent": ["axios.get('/ok')"]}), encoding="utf-8"
+    )
+    (tmp_path / "lone.js").write_text("y" * 100, encoding="utf-8")
+    notes: list[str] = []
+    files = electron.read_app(tmp_path, notes, max_bytes=90)
+    assert files == {"s.ts": "axios.get('/ok')"} and len(notes) == 2
+    assert any("big.js:" in n and "its .map sources were read instead" in n for n in notes)
+    assert any("lone.js:" in n and "no .map sources cover it" in n for n in notes)
+
+
 # ---------- CLI and MCP tool ----------
 
 
