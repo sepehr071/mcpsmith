@@ -137,3 +137,145 @@ def test_detected_by_dir_or_cli(tmp_path):
     (tmp_path / ".cursor").mkdir()
     assert cursor.detected(tmp_path, {}, none)
     assert not AGENTS["codex"].detected(tmp_path, {"CODEX_HOME": str(tmp_path / "cx")}, none)
+
+
+# --- mcpsmith setup ---
+
+import io  # noqa: E402
+import json  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from mcpsmith.cli import build_parser, main  # noqa: E402
+from mcpsmith.setup import run as setup_run  # noqa: E402
+
+TOML = '# my config\nmodel = "o3"\n\n[mcp_servers.other]\ncommand = "x"\n'
+
+
+class Tty(io.StringIO):
+    def isatty(self):
+        return True
+
+
+def make_home(tmp_path):
+    (tmp_path / ".claude.json").write_text(json.dumps({"theme": "dark", "mcpServers": {"o": {"command": "x"}}}))
+    (tmp_path / ".claude").mkdir()
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex" / "config.toml").write_text(TOML, encoding="utf-8")
+    return tmp_path
+
+
+def go(tmp_path, *argv, which=lambda c: "/bin/" + c, stdin=None, env=None):
+    calls = []
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    args = build_parser().parse_args(["setup", *argv])
+    rc = setup_run.cmd(args, tmp_path, env or {}, which, runner, stdin or Tty())
+    return rc, calls
+
+
+def test_dry_run_writes_nothing(tmp_path, capsys):
+    home = make_home(tmp_path)
+    before = (home / ".claude.json").read_bytes()
+    rc, calls = go(home, "--dry-run", "--agents", "claude,codex")
+    out = capsys.readouterr().out
+    assert rc == 0 and calls == []
+    assert (home / ".claude.json").read_bytes() == before
+    assert not list(home.rglob("*.mcpsmith.bak")) and not (home / ".agents").exists()
+    assert out.count("add") >= 6 and "chrome-devtools" in out and "rea" in out and ".agents" in out
+
+
+def test_setup_remove_roundtrip(tmp_path):
+    home = make_home(tmp_path)
+    orig_json = json.loads((home / ".claude.json").read_text())
+    rc, calls = go(home, "--yes", "--agents", "claude,codex")
+    assert rc == 0
+    assert [c[-3:] for c in calls] == [["--client", "claude_code", "--yes"], ["--client", "codex", "--yes"]]
+    assert "setup" in calls[0] and setup_run.REA in calls[0]
+    cfg = json.loads((home / ".claude.json").read_text())
+    assert {"mcpsmith", "chrome-devtools", "o"} <= set(cfg["mcpServers"])
+    assert "mcp_servers.mcpsmith" in (home / ".codex" / "config.toml").read_text()
+    for n in SKILLS:
+        assert (home / ".claude" / "skills" / n / "SKILL.md").is_file()
+        assert (home / ".agents" / "skills" / n / "SKILL.md").is_file()
+    bak = home / ".claude.json.mcpsmith.bak"
+    assert json.loads(bak.read_text()) == orig_json
+    assert (home / ".codex" / "config.toml.mcpsmith.bak").read_text(encoding="utf-8") == TOML
+
+    # second run: nothing to add, backups untouched
+    rc, calls = go(home, "--yes", "--agents", "claude,codex", "--no-rea")
+    assert json.loads(bak.read_text()) == orig_json
+    plan = setup_run.plan(home, {}, ["claude", "codex"], False, True, False, lambda c: "/x")
+    assert not [c for c in plan if c.action == "add"] and {c.action for c in plan} == {"skip"}
+
+    rc, calls = go(home, "--yes", "--remove", "--agents", "claude,codex")
+    assert ["uninstall" in c for c in calls] == [True, True]
+    assert json.loads((home / ".claude.json").read_text()) == orig_json
+    assert (home / ".codex" / "config.toml").read_text(encoding="utf-8").startswith(TOML)
+    assert not any((home / ".claude" / "skills").glob("*")) and not any((home / ".agents" / "skills").glob("*"))
+
+
+def test_undetected_agent_untouched(tmp_path):
+    home = make_home(tmp_path)
+    rc, _ = go(home, "--yes", "--no-rea", which=lambda c: None)
+    assert rc == 0
+    assert not (home / ".cursor").exists() and not (home / ".gemini").exists()
+
+
+def test_malformed_config_skips_that_agent(tmp_path, capsys):
+    home = make_home(tmp_path)
+    (home / ".codex" / "config.toml").write_text("[[[ bad", encoding="utf-8")
+    (home / ".claude.json").write_text(json.dumps({"mcpServers": "oops"}))
+    (home / ".cursor").mkdir()
+    rc, calls = go(home, "--yes", "--agents", "claude,codex,cursor")
+    assert rc == 0 and [c[-2] for c in calls] == ["cursor"]
+    assert (home / ".codex" / "config.toml").read_text(encoding="utf-8") == "[[[ bad"
+    assert "mcpsmith" in json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]
+    assert capsys.readouterr().out.count("skipped:") >= 2
+
+
+def test_no_node_skips_chrome_and_rea(tmp_path, capsys):
+    home = make_home(tmp_path)
+    rc, calls = go(home, "--yes", "--agents", "claude", which=lambda c: None)
+    out = capsys.readouterr().out
+    assert rc == 0 and calls == []
+    assert out.count("npx not found") >= 2
+    assert list(json.loads((home / ".claude.json").read_text())["mcpServers"]) == ["o", "mcpsmith"]
+
+
+def test_foreign_entry_left_alone(tmp_path):
+    home = make_home(tmp_path)
+    cfg = {"mcpServers": {"chrome-devtools": {"command": "mine"}}}
+    (home / ".claude.json").write_text(json.dumps(cfg))
+    go(home, "--yes", "--agents", "claude", "--no-rea", "--no-skills")
+    assert json.loads((home / ".claude.json").read_text())["mcpServers"]["chrome-devtools"] == {"command": "mine"}
+    go(home, "--yes", "--agents", "claude", "--no-rea", "--no-skills", "--remove")
+    assert json.loads((home / ".claude.json").read_text()) == cfg
+
+
+def test_verify_failure_restores(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    before = (home / ".claude.json").read_bytes()
+    monkeypatch.setattr(AGENTS["claude"].__class__, "has", lambda self, doc, name: False)
+    rc, _ = go(home, "--yes", "--agents", "claude", "--no-rea", "--no-skills")
+    assert rc == 1 and (home / ".claude.json").read_bytes() == before
+
+
+def test_non_tty_without_yes_exits_2(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(setup_run.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr("sys.stdin", io.StringIO(""))
+    assert main(["setup", "--agents", "claude", "--no-rea"]) == 2
+    assert "--yes" in capsys.readouterr().err
+    assert not (tmp_path / ".claude.json").exists()
+
+
+def test_confirmation_prompt(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _: "n")
+    go(home, "--agents", "claude", "--no-rea")
+    assert not (home / ".claude.json.mcpsmith.bak").exists()
+    monkeypatch.setattr("builtins.input", lambda _: "y")
+    go(home, "--agents", "claude", "--no-rea")
+    assert (home / ".claude.json.mcpsmith.bak").exists()
