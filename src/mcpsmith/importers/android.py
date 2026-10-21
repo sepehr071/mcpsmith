@@ -430,3 +430,41 @@ def resolve_annotations(builder_java: str) -> dict[str, str]:
         elif not kinds and "allowUnsafeNonAsciiValues()" in block and ".value()" in block:
             out[simple] = "Header"
     return out
+
+
+# ---------- apps without a declared HTTP interface ----------
+
+# (app or SDK, mcpsmith sign-in provider, class-name fragments of its own request signer). Matched on class names
+# only: nothing from the classes' code reaches the output.
+KNOWN_SIGNERS = [
+    ("Xiaomi Mi Home", "xiaomi", ("com.xiaomi.smarthome", "SmartHomeRc4", "com.xiaomi.youpin.login")),
+]
+
+
+def known_signer(class_names) -> tuple[str, str] | None:
+    """(app, provider) of the first known request-signing SDK among `class_names`, else None."""
+    names = list(class_names)
+    for app, provider, fragments in KNOWN_SIGNERS:
+        if any(f in n for f in fragments for n in names):
+            return app, provider
+    return None
+
+
+def dead_end(signer: tuple[str, str] | None = None) -> str:
+    """What to do when the app declares no HTTP interface (no Retrofit-style class to read)."""
+    text = (
+        "no candidate API classes: the app declares no HTTP interface (no Retrofit-style class), so it likely builds "
+        "or signs its requests itself. Next: record its traffic instead. Desktop app or website: run `mcpsmith "
+        "browser`, then smith_record_start / smith_record_stop. Phone: proxy the phone through mitmproxy "
+        "(`mcpsmith app-desktop` prints the steps), then import the HAR with `mcpsmith app-desktop capture.har`."
+    )
+    return text + (" " + signer_note(signer) if signer else "")
+
+
+def signer_note(signer: tuple[str, str]) -> str:
+    """The sign-in advice for an app whose request-signing SDK was found."""
+    app, provider = signer
+    return (
+        f"Found {app}'s request-signing SDK: its calls are signed by the app, so sign in instead of copying keys; "
+        f"plans use `auth: {{type: signin, provider: {provider}}}` (endpoints from a candidate class or recorded traffic)."
+    )

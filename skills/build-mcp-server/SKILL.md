@@ -9,9 +9,11 @@ Not set up yet? `uvx mcpsmith setup` registers mcpsmith, Chrome DevTools MCP and
 
 mcpsmith turns an OpenAPI file or a recorded website session (HAR) into a Python MCP server project with tests, CI, a publish workflow and a Claude Code plugin. You design the tools; mcpsmith generates and checks the code.
 
-Run commands with `uvx mcpsmith <cmd>` (or `mcpsmith <cmd>` if installed). No shell? Use the mcpsmith MCP tools instead: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check`, and the hub tools `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_tools`, `smith_call` (paths absolute).
+Run commands with `uvx mcpsmith <cmd>` (or `mcpsmith <cmd>` if installed). No shell? Use the mcpsmith MCP tools instead: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check`, `smith_install`, and the hub tools `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_login`, `smith_tools`, `smith_call` (paths absolute).
 
-Two ways to finish. Hub (default for a site the user logs in to, or to try tools fast): `smith_connect` turns `plan.yaml` into live tools on this machine, no project needed; for a site that needs a login see the `extract-api` skill. Export: `generate` writes a standalone project to publish (section 6). Connect first, verify the tools, export only when the user wants to publish or share. If they are missing: `claude mcp add mcpsmith -- uvx mcpsmith mcp`.
+The end result users want is a normal MCP server their agent runs: `generate` the project, test it, then `mcpsmith install <project>` (`smith_install`) registers it with their agents (section 6). The hub (`smith_connect`, live tools with no project; for a logged-in site see the `extract-api` skill) is for trying tools fast before that, not the finish. If the mcpsmith tools are missing: `claude mcp add mcpsmith -- uvx mcpsmith mcp`.
+
+App that signs its own requests (no readable HTTP interface, `app-android` says so): use `auth: {type: signin, provider: ...}` when mcpsmith has a provider for it. The user signs in through a link from the login tool; never ask for passwords or tokens in chat.
 
 ## 0. Ask first
 
@@ -20,7 +22,7 @@ Ask the user, then wait:
 - Input: an OpenAPI/Swagger file or URL, or a website with no public API?
 - Auth: does it need a token or login? Which account is safe to test with?
 
-Done means: the connected tools return correct output (hub), or `uv run pytest` passes in the exported project and `mcpsmith check` shows no errors and sane output sizes.
+Done means: `uv run pytest` passes in the exported project, `mcpsmith check` shows no errors and sane output sizes, and the server is installed in the user's agents (or the user said they only want to try it in the hub).
 
 ## 1. Get the source
 
@@ -102,13 +104,13 @@ Need one tool to call several endpoints? Hand-edit `src/<package>/server.py`. Re
 
 ## 6. Install and publish
 
-Local, with Claude Code:
+Local, with every agent found (Claude Code, Codex, Cursor, Gemini CLI); ask the user first, it edits their agent configs:
 
 ```
-claude mcp add site-mcp -- uv run --directory /abs/path/site-mcp site-mcp
+mcpsmith install /abs/path/site-mcp        # --dry-run first; --pypi once it is released
 ```
 
-Needed env vars of the generated server: `<P>_PROXY` (proxy URL or comma list), `<P>_BASE_URL`, and the auth var named in the plan.
+The user restarts their agent. Needed env vars of the generated server: `<P>_PROXY` (proxy URL or comma list), `<P>_BASE_URL`, and the auth var named in the plan (signin auth needs none: its `<prefix>_login` tool signs the user in).
 
 Publish (ask the user first; it is public):
 1. Create the GitHub repo, push the project.

@@ -1,6 +1,10 @@
+import base64
+import hashlib
 import json
 import ssl
 from typing import Annotated
+from unittest.mock import AsyncMock
+from urllib.parse import parse_qsl
 
 import httpx
 import pytest
@@ -8,7 +12,8 @@ import truststore
 from mcp import Client
 from pydantic import Field
 
-from mcpsmith.runtime import Api, ApiError, Registry, build_server, http, shape
+from mcpsmith.runtime import Api, ApiError, Registry, build_server, http, shape, signin
+from mcpsmith.runtime.signin import xiaomi
 
 pytestmark = pytest.mark.anyio
 
@@ -381,3 +386,79 @@ def test_plain_transport_verifies_with_os_trust_store():
     ctx = transport._pool._ssl_context
     assert isinstance(ctx, truststore.SSLContext) and ctx is http.tls_context()
     assert ctx.verify_mode == ssl.CERT_REQUIRED
+
+
+def test_nest_builds_lists_from_index_keys():
+    body = {"method": "set_bright", "params.0": 50, "params.1": "smooth", "a.1": "x", "keep": {"0": 1}}
+    assert http._nest(body) == {"method": "set_bright", "params": [50, "smooth"], "a": {"1": "x"}, "keep": {"0": 1}}
+
+
+XIAOMI_SESSION = {"userId": "42", "ssecurity": base64.b64encode(b"s" * 16).decode(), "serviceToken": "tok"}
+
+
+def xiaomi_api(handler, monkeypatch, session=XIAOMI_SESSION):
+    monkeypatch.setenv("XM_MCP_SESSION", json.dumps(session) if session else "")
+    auth = {"type": "signin", "provider": "xiaomi", "env": "XM_MCP_SESSION"}
+    api = Api(base_url="https://us.api.io.mi.com/app", env_prefix="XM_MCP", auth=auth)
+    api.set_transport(httpx.MockTransport(handler))
+    return api
+
+
+def mi_server(answer, status=200):
+    """A fake Mi cloud: checks the signature, decrypts `data`, returns `answer(data)` encrypted."""
+    seen = []
+
+    def handler(request):
+        form = dict(parse_qsl(request.content.decode()))
+        key = hashlib.sha256(b"s" * 16 + base64.b64decode(form["_nonce"])).digest()
+        signed = {k: form[k] for k in ("data", "rc4_hash__")}
+        assert form["signature"] == xiaomi._signature("/home/rpc/7", base64.b64encode(key).decode(), signed)
+        data = json.loads(xiaomi.decrypt(key, form["data"].encode()))
+        seen.append((request, data))
+        return httpx.Response(status, content=base64.b64encode(xiaomi.rc4(key, json.dumps(answer(data)).encode())))
+
+    return handler, seen
+
+
+async def test_xiaomi_call_signs_encrypts_and_decrypts(monkeypatch):
+    handler, seen = mi_server(lambda d: {"code": 0, "result": ["ok", d["method"]]})
+    api = xiaomi_api(handler, monkeypatch)
+    out = await api.call("POST", "/home/rpc/{did}", path={"did": 7}, body={"method": "set_power", "params.0": "on"})
+    assert out == {"code": 0, "result": ["ok", "set_power"]}
+    request, data = seen[0]
+    assert data == {"method": "set_power", "params": ["on"]}
+    assert "serviceToken=tok" in request.headers["cookie"] and "userId=42" in request.headers["cookie"]
+    assert request.headers["miot-encrypt-algorithm"] == "ENCRYPT-RC4"
+
+
+async def test_xiaomi_errors(monkeypatch):
+    api = xiaomi_api(mi_server(lambda d: {"code": -2, "message": "device offline"})[0], monkeypatch)
+    with pytest.raises(ApiError, match="code -2.*device offline"):
+        await api.call("POST", "/home/rpc/7", body={"method": "get_prop"})
+    api = xiaomi_api(lambda r: httpx.Response(401), monkeypatch)
+    with pytest.raises(ApiError, match="sign-in has expired.*smith_login") as e:
+        await api.call("POST", "/home/rpc/7", body={})
+    assert e.value.expired
+    api = xiaomi_api(lambda r: httpx.Response(200), monkeypatch, session=None)
+    with pytest.raises(ApiError, match="Not signed in to Xiaomi.*smith_login"):
+        await api.call("POST", "/home/rpc/7", body={})
+
+
+def test_signin_needs_a_known_provider():
+    with pytest.raises(ValueError, match="unknown sign-in provider"):
+        Api(
+            base_url="https://x.test", env_prefix="X_MCP", auth={"type": "signin", "provider": "nope", "env": "X_MCP_S"}
+        )
+
+
+async def test_signin_login_reports_account_and_where_data_is(monkeypatch):
+    api = xiaomi_api(lambda r: httpx.Response(200), monkeypatch)
+    found = {"de": {"devices": 2, "base_url": "https://de.api.io.mi.com/app"}}
+    monkeypatch.setattr(xiaomi, "whoami", AsyncMock(return_value={"account": "4***2", "found": found}))
+    r = await signin.login("x", "XM_MCP_SESSION", api)
+    assert r["signed_in"] and r["account"] == "4***2"
+    assert "https://de.api.io.mi.com/app" in r["next"] and "set XM_MCP_BASE_URL" in r["next"]
+    xiaomi.whoami.return_value = {"account": "4***2", "found": {}}
+    assert "wrong one" in (await signin.login("x", "XM_MCP_SESSION", api))["next"]
+    xiaomi.whoami.return_value = {"account": "4***2", "found": {"us": {"devices": 1, "base_url": api.base_url}}}
+    assert "again=true" in (await signin.login("x", "XM_MCP_SESSION", api))["next"]

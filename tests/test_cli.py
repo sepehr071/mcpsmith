@@ -140,6 +140,8 @@ async def test_server_tools(client, spec, tmp_path):
         "smith_connect",
         "smith_disconnect",
         "smith_connections",
+        "smith_login",
+        "smith_install",
         "smith_tools",
         "smith_call",
     }
@@ -159,6 +161,23 @@ async def test_server_tools(client, spec, tmp_path):
     out = tmp_path / "out"
     r = await call(client, "smith_generate", {"workdir": wd, "out": str(out)})
     assert r["files"] > 5 and (out / "pyproject.toml").exists()
+    assert any("smith_install" in step for step in r["next"])
+
+
+@pytest.mark.anyio
+async def test_smith_install_registers_generated_project(client, spec, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(server.Path, "home", lambda: home)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    wd, out = str(tmp_path / "wd"), tmp_path / "out"
+    await call(client, "smith_inspect", {"source": str(spec), "workdir": wd})
+    await call(client, "smith_draft", {"workdir": wd, "name": "pets-mcp"})
+    await call(client, "smith_generate", {"workdir": wd, "out": str(out)})
+    r = await call(client, "smith_install", {"project": str(out), "agents": ["claude"]})
+    assert not r["conflicts"]
+    entry = json.loads((home / ".claude.json").read_text(encoding="utf-8"))["mcpServers"]["pets-mcp"]
+    assert entry["command"] == "uv" and entry["args"] == ["run", "--directory", str(out.resolve()), "pets-mcp"]
 
 
 @pytest.mark.anyio
@@ -172,3 +191,21 @@ def test_connections_command(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("MCPSMITH_HOME", str(tmp_path))
     assert main(["connections"]) == 0
     assert "(none)" in capsys.readouterr().out
+
+
+def test_setup_and_install_parse():
+    from mcpsmith.cli import build_parser
+
+    p = build_parser()
+    assert not p.parse_args(["setup"]).rea and p.parse_args(["setup", "--rea"]).rea
+    assert not p.parse_args(["setup", "--no-rea"]).rea  # deprecated no-op
+    a = p.parse_args(["install", "proj", "--pypi", "--force", "--remove", "--agents", "claude", "--dry-run", "--yes"])
+    assert (a.project, a.pypi, a.force, a.remove, a.agents, a.dry_run, a.yes) == (
+        "proj",
+        True,
+        True,
+        True,
+        "claude",
+        True,
+        True,
+    )

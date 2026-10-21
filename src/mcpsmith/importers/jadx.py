@@ -1,17 +1,21 @@
-"""Decompiled classes of an APK from REA's bundled JADX MCP server (a jar speaking MCP over stdio).
+"""Decompiled classes of an APK, from the jadx CLI or REA's bundled JADX MCP server (a jar speaking MCP over stdio).
 
-The jar and a Java runtime belong to REA and the machine: `npx -y rea-agents setup` installs the jar and sets
-REA_JADX_MCP_JAR. mcpsmith never ships a decompiler, downloads an app, or runs anything from the APK's directory.
+Order: an explicit jar, else `jadx` on PATH (decompiled once per APK into a temp cache, then read as files), else
+REA_JADX_MCP_JAR (`npx -y rea-agents setup` installs it). The decompiler and a Java runtime belong to the machine:
+mcpsmith never ships one, downloads an app, or runs anything from the APK's directory.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
@@ -30,12 +34,61 @@ MAX_SCAN = 1_000_000  # classes scanned per search; the jar's own default stops 
 MISSING = (
     "run `npx -y rea-agents setup` (it installs the JADX MCP jar and sets REA_JADX_MCP_JAR) or pass --jadx-jar PATH"
 )
+INSTALL = (
+    "install jadx so `jadx` is on PATH (free: https://github.com/skylot/jadx/releases, or `scoop install extras/jadx`), "
+    f"or {MISSING}"
+)
+CACHE = Path(tempfile.gettempdir()) / "mcpsmith-jadx"  # the jadx CLI's output, one directory per APK sha256
+
+
+def _jadx_cli() -> str | None:
+    names = ("jadx", "jadx.bat", "jadx.cmd") if sys.platform == "win32" else ("jadx",)
+    return next((path for name in names if (path := shutil.which(name))), None)
+
+
+def _tree(apk: Path, jar: str | None) -> Path | None:
+    """The jadx CLI's decompiled sources of `apk` (decompiled once per APK content), or None to use the jar."""
+    exe = None if jar else _jadx_cli()
+    if not exe:
+        return None
+    if not apk.is_file():
+        raise ValueError(f"{apk}: not a file")
+    sha = hashlib.sha256()
+    with apk.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            sha.update(chunk)
+    out = CACHE / sha.hexdigest()
+    if (out / "sources").is_dir():
+        return out / "sources"
+    CACHE.mkdir(parents=True, exist_ok=True)
+    tmp = Path(tempfile.mkdtemp(dir=CACHE))  # new and empty; becomes `out` only once jadx has finished
+    args = [exe, "-d", str(tmp), "--show-bad-code", "--no-res", str(apk.resolve())]
+    proc = subprocess.run(args, cwd=CACHE, capture_output=True, text=True, errors="replace")
+    # jadx exits non-zero when some classes fail to decompile; the rest are still usable
+    if not (tmp / "sources").is_dir() or not any((tmp / "sources").rglob("*.java")):
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError(f"jadx produced no classes (exit {proc.returncode}): {(proc.stderr or proc.stdout)[-300:]}")
+    try:
+        tmp.rename(out)
+    except OSError:  # a concurrent run finished first
+        if not (out / "sources").is_dir():
+            raise
+        shutil.rmtree(tmp, ignore_errors=True)
+    return out / "sources"
+
+
+def _classes(tree: Path) -> dict[str, Path]:
+    return {".".join(p.relative_to(tree).with_suffix("").parts): p for p in tree.rglob("*.java")}
+
+
+def _read(path: Path) -> str:
+    return path.read_text(encoding="utf-8", errors="replace")
 
 
 def _jar(jar: str | None) -> str:
     path = jar or os.environ.get("REA_JADX_MCP_JAR") or ""
     if not path or not Path(path).is_file():
-        raise RuntimeError(f"JADX MCP jar not found ({path or 'REA_JADX_MCP_JAR unset'}): {MISSING}")
+        raise RuntimeError(f"no decompiler: JADX MCP jar not found ({path or 'REA_JADX_MCP_JAR unset'}): {INSTALL}")
     return path
 
 
@@ -99,19 +152,45 @@ async def _search(call: Call, term: str, scope: str = "code") -> list[str]:
 
 
 def find_api_classes(apk: Path, jar: str | None = None) -> list[str]:
-    """Classes whose code holds a path-like string such as "api/..." or "/v1/..." (candidates for the HTTP interface)."""
+    """Classes whose code holds a path-like string such as "api/..." or "/v1/..." (candidates for the HTTP interface).
 
-    async def work(call: Call) -> list[str]:
-        found = [n for term in API_STRINGS for n in await _search(call, term)]
-        return sorted(dict.fromkeys(found))
+    None found is an error that says what to do instead, naming a known request-signing SDK when the app has one.
+    """
+    return api_classes_and_signer(apk, jar)[0]
 
-    return _run(apk, jar, work)
+
+def api_classes_and_signer(apk: Path, jar: str | None = None) -> tuple[list[str], tuple[str, str] | None]:
+    """find_api_classes, plus (app, provider) of a known request-signing SDK in the app, else None."""
+    if (tree := _tree(apk, jar)) is not None:
+        classes = _classes(tree)
+        found = [n for n, p in classes.items() if any(term in _read(p) for term in API_STRINGS)]
+        signer = android.known_signer(classes)
+    else:
+
+        async def work(call: Call) -> tuple[list[str], tuple[str, str] | None]:
+            found = [n for term in API_STRINGS for n in await _search(call, term)]
+            for app, provider, fragments in android.KNOWN_SIGNERS:  # code that names the SDK's classes
+                for fragment in fragments:
+                    if await _search(call, fragment):
+                        return found, (app, provider)
+            return found, None
+
+        found, signer = _run(apk, jar, work)
+    if not found:
+        raise RuntimeError(android.dead_end(signer))
+    return sorted(dict.fromkeys(found)), signer
 
 
 def class_source(apk: Path, class_name: str, jar: str | None = None) -> str:
     """The decompiled Java of one class."""
     if not CLASS_NAME.fullmatch(class_name):
         raise ValueError(f"{class_name!r} is not a class name like com.example.api.Service")
+    if (tree := _tree(apk, jar)) is not None:
+        *package, name = class_name.split("$")[0].split(".")  # an inner class lives in its outer class's file
+        path = tree.joinpath(*package, name + ".java")
+        if not path.is_file():
+            raise RuntimeError(f"jadx: no class {class_name} in {apk.name}")
+        return _read(path)
 
     async def work(call: Call) -> str:
         return await call("get_class_source", {"class_name": class_name})
@@ -121,6 +200,12 @@ def class_source(apk: Path, class_name: str, jar: str | None = None) -> str:
 
 def builder_annotations(apk: Path, jar: str | None = None) -> dict[str, str]:
     """Minified annotation name -> Retrofit meaning, from the app's Retrofit request builder ({} if it has none)."""
+    if (tree := _tree(apk, jar)) is not None:
+        mapping: dict[str, str] = {}
+        for path in _classes(tree).values():
+            if BUILDER_MARK in (java := _read(path)):
+                mapping |= android.resolve_annotations(java)
+        return mapping
 
     async def work(call: Call) -> dict[str, str]:
         mapping: dict[str, str] = {}

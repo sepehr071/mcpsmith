@@ -4,13 +4,13 @@ Python framework that turns an OpenAPI/Swagger file, a recorded website session 
 
 ## Workflow
 
-Install for your agents with `uvx mcpsmith setup` (`--dry-run` first; `--agents`, `--no-rea`, `--no-skills`, `--yes`, `--remove`).
+Install for your agents with `uvx mcpsmith setup` (`--dry-run` first; `--agents`, `--rea`, `--no-skills`, `--yes`, `--remove`).
 
 Ask the user which tasks the server should support, then:
 
 1. Pick the source (apps and programs: only software the user owns or is authorized to analyze):
    - Website only: `mcpsmith capture <url> -o site.har --host <host>` (user browses, closes the browser), or use a DevTools HAR export. For a logged-in site use the hub (below).
-   - Android: `mcpsmith app-android <apk> --base-url <url>` lists candidate Retrofit classes; add `--class NAME` to write `source.json` (or `--source FILE` for an already decompiled class). Needs REA's JADX jar (`REA_JADX_MCP_JAR`, set by `npx rea-agents setup`).
+   - Android: `mcpsmith app-android <apk> --base-url <url>` lists candidate Retrofit classes; add `--class NAME` to write `source.json` (or `--source FILE` for an already decompiled class). Needs `jadx` on PATH (free) or REA's JADX jar (`REA_JADX_MCP_JAR`). No declared interface: the error says what to do (record traffic, or the sign-in provider for the app's request signing: `auth: {type: signin, provider: ...}`).
    - Electron/JS: `mcpsmith app-js <dir|app.asar|file> --base-url <url>`.
    - Desktop program: `mcpsmith app-desktop` prints the mitmproxy steps for the user to run; `mcpsmith app-desktop <capture.har> --host <host>` imports the HAR.
    - App endpoints are unverified: `mcpsmith probe` calls the GET ones live (`--writes` for the rest, only after the user agrees, `--limit N`). An endpoint with no method cannot be used until the plan sets it.
@@ -22,16 +22,17 @@ Ask the user which tasks the server should support, then:
 7. `mcpsmith generate -o <dir>`, then `cd <dir> && uv run pytest`.
 8. `mcpsmith check <dir>` calls every tool live: errors, output size, empty fields. Confirm with the user before it runs non-GET tools.
 9. Edit the plan and `generate --force` to iterate. Hand edits to `server.py` are overwritten by regenerating.
+   When it works, `mcpsmith install <dir>` registers it with the user's agents (ask first): that is the end result users want, a normal MCP server.
 10. Publish: PyPI trusted publisher (workflow `publish.yml`, environment `pypi`), bump `version` in `pyproject.toml` and `server.json`, tag `v*`.
 
-Without a shell, use the MCP tools: `smith_guide`, `smith_inspect`, `smith_app_android`, `smith_app_js`, `smith_app_desktop`, `smith_probe`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check` (paths absolute).
+Without a shell, use the MCP tools: `smith_guide`, `smith_inspect`, `smith_app_android`, `smith_app_js`, `smith_app_desktop`, `smith_probe`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check`, `smith_install` (paths absolute).
 
 Live hub (no project needed; connections are personal, stored under `~/.mcpsmith`, override with `MCPSMITH_HOME`):
 
 - `mcpsmith browser [--port N] [--no-proxy]` starts the shared Chrome the developer logs in with; point Chrome DevTools MCP at it: `npx chrome-devtools-mcp@1.11.0 --browser-url=http://127.0.0.1:9222`. Never use DevTools `get_network_request` (it prints cookies).
 - `smith_record_start(name, hosts)` / `smith_record_stop(name)` record API traffic from that Chrome into a HAR; then `smith_inspect`, edit the plan, `smith_validate`.
 - `smith_connect(workdir, name)` makes the plan's tools live; `smith_connections`, `smith_tools(connection)`, `smith_call(connection, tool, args)` (read-only tools), `smith_disconnect(name)`. CLI: `mcpsmith connections`.
-- Credentials come from the developer: `mcpsmith secret set|list|delete <connection> [NAME] [--once]`; never in chat or plans.
+- Credentials come from the developer: `mcpsmith secret set|list|delete <connection> [NAME] [--once]`; never in chat or plans. A tool says "Not signed in": `smith_login(connection)` gives the step or sign-in link.
 - `generate` is the publish path; it refuses `auth: browser` plans (switch to token auth).
 
 ## Skills

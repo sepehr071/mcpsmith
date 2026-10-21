@@ -24,7 +24,7 @@ from ..model import (
     check_transform,
     endpoint_method,
 )
-from ..runtime import transforms
+from ..runtime import signin, transforms
 
 PATH_PARAM = re.compile(r"\{([^}]+)\}")
 
@@ -124,8 +124,22 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
                 "plan.auth.session_cookie",
                 "set auth.session_cookie so an ended session is reported instead of returning empty data.",
             )
-    elif plan.auth and plan.auth.session_cookie:
+    elif plan.auth and plan.auth.type == "signin":
+        if plan.auth.provider not in signin.PROVIDERS:
+            err("plan.auth.provider", f"signin auth needs a provider, one of {sorted(signin.PROVIDERS)}.")
+        if f"{plan.prefix}_login" in {t.name for t in plan.tools}:
+            err("plan.tools", f"{plan.prefix}_login is the sign-in tool signin auth adds; rename that tool.")
+    if plan.auth and plan.auth.type != "browser" and plan.auth.session_cookie:
         err("plan.auth.session_cookie", "session_cookie only applies to browser auth.")
+    if plan.auth and plan.auth.type != "signin" and plan.auth.provider:
+        err("plan.auth.provider", "provider only applies to signin auth.")
+    texts = [plan.instructions, *(t.description for t in plan.tools)]
+    if hub_only := sorted({m for text in texts for m in re.findall(r"\bsmith_\w+", text)}):
+        login = f"; its sign-in tool is {plan.prefix}_login" if plan.auth and plan.auth.type == "signin" else ""
+        warn(
+            "plan.instructions",
+            f"mentions {', '.join(hub_only)}: mcpsmith hub tools a generated server does not have{login}.",
+        )
     if len(plan.tools) > 20:
         warn("plan.tools", f"{len(plan.tools)} tools; merge near-duplicates and drop noise to stay at 20 or fewer.")
 

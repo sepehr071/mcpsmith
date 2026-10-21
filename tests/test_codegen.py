@@ -373,3 +373,44 @@ def test_templates(project):
 def test_generated_dependency_floor(tmp_path):
     generate(PLAN, tmp_path / "a", SOURCE)
     assert '"mcpsmith>=0.2"' in (tmp_path / "a/pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_signin_project_has_login_and_replays_encrypted(tmp_path):
+    source = Source(
+        kind="app",
+        title="Mi",
+        base_url="https://us.api.io.mi.com/app",
+        endpoints=[
+            Endpoint(
+                id="rpc", method="POST", path="/home/rpc/{did}", response_example={"code": 0, "result": ["on", "80"]}
+            )
+        ],
+    )
+    tool = Tool(
+        name="demo_status",
+        title="Status",
+        description="Power and brightness of one bulb.",
+        endpoint="rpc",
+        args=[_arg(name="did", description="Bulb id, e.g. '7'.", required=True, to="path.did")],
+        fixed={"body.method": "get_prop", "body.params": ["power", "bright"]},
+        output=Output(fields={"power": "result.0", "brightness": "result.1"}),
+        example={"did": "7"},
+    )
+    auth = AuthScheme(name="mi", type="signin", provider="xiaomi", env="DEMO_MCP_SESSION")
+    out = tmp_path / "demo-mcp"
+    generate(PLAN.model_copy(update={"tools": [tool], "auth": auth}), out, source)
+    code = (out / "src/demo_mcp/server.py").read_text(encoding="utf-8")
+    assert 'secret=signin.keychain("demo-mcp")' in code and '"provider": "xiaomi"' in code
+    assert "async def demo_login(" in code and 'signin.login("demo-mcp", "DEMO_MCP_SESSION", api, again)' in code
+    assert '"mcpsmith>=0.5"' in (out / "pyproject.toml").read_text(encoding="utf-8")
+    assert "DEMO_MCP_SESSION=" not in (out / "README.md").read_text(encoding="utf-8")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DEMO_MCP")} | {"PYTHONPATH": str(out / "src")}
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", str(out / "tests"), "-q", "-p", "no:cacheprovider"],
+        cwd=out,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "1 passed" in r.stdout
