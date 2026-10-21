@@ -341,3 +341,13 @@ async def test_make_api_browser_needs_running_chrome(monkeypatch):
     assert api.login_path == "/Login"
     with pytest.raises(ApiError, match="not running"):
         await api.call("GET", "/x")
+
+
+@pytest.mark.parametrize("exc", [OSError, TimeoutError, httpx.ConnectError])
+async def test_browser_auth_cookie_errors_map_to_not_running(exc):
+    async def down(host):
+        raise exc("x")
+
+    api = make_api(lambda r: httpx.Response(200, json={}), auth={"type": "browser"}, cookie_provider=down)
+    with pytest.raises(ApiError, match="The mcpsmith Chrome is not running"):
+        await api.call("GET", "/x")

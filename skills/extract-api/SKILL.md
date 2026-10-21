@@ -20,7 +20,7 @@ Ask the user, then wait:
 
 ```
 mcpsmith browser                 # starts or reuses Chrome on port 9222; --port N, --no-proxy
-npx chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9222
+npx chrome-devtools-mcp@1.11.0 --browser-url=http://127.0.0.1:9222
 ```
 
 The second line is the Chrome DevTools MCP config: point it at the port `mcpsmith browser` printed, then restart the MCP client if it was configured differently. Open the site with DevTools `navigate_page`.

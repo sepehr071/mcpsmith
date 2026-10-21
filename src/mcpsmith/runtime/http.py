@@ -142,7 +142,7 @@ class Api:
             if self.auth and self.auth["type"] == "browser" and self.cookie_provider:
                 try:
                     cookies.update(await self.cookie_provider(host))
-                except ConnectionError:
+                except (OSError, httpx.HTTPError, RuntimeError):
                     raise ApiError(
                         "The mcpsmith Chrome is not running. Start it with `mcpsmith browser`, log in, then retry."
                     ) from None

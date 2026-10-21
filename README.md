@@ -64,7 +64,7 @@ For a dashboard or portal with no public API, the agent records the site's own c
 
 ```bash
 mcpsmith browser                                                      # shared Chrome on port 9222 (--port N, --no-proxy)
-npx chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9222    # point Chrome DevTools MCP at it
+npx chrome-devtools-mcp@1.11.0 --browser-url=http://127.0.0.1:9222    # point Chrome DevTools MCP at it
 ```
 
 1. Log in yourself in that Chrome window (passwords and 2FA never reach the agent).

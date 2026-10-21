@@ -122,3 +122,23 @@ async def test_listeners_notified(tmp_path, hub):
             event = await sub.__anext__()
         assert event is not None
         assert "demo_item" in {t.name for t in (await c.list_tools()).tools}
+
+
+async def test_reconnect_from_saved_dir_keeps_plan(tmp_path):
+    h = Hub(MCPServer("a"))
+    h.connect(workdir(tmp_path))
+    saved = tmp_path / "home" / "connections" / "demo-mcp"
+    h.connect(saved)
+    assert (saved / "plan.yaml").exists() and (saved / "source.json").exists()
+    h2 = Hub(MCPServer("b"))
+    assert h2.load_all() == [] and h2.connections()[0]["ok"]
+
+
+async def test_connection_proxy_has_no_credentials(tmp_path):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "browser.json").write_text(json.dumps({"port": 1, "proxy": "u:p@h:1"}))
+    h = Hub(MCPServer("a"))
+    h.connect(workdir(tmp_path))
+    meta = (home / "connections" / "demo-mcp" / "meta.json").read_text()
+    assert "u:p" not in meta and json.loads(meta)["proxy"] == "http://h:1"

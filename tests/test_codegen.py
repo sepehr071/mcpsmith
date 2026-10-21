@@ -368,3 +368,8 @@ def test_templates(project):
     assert (
         (project / "README.md").read_text(encoding="utf-8").startswith("<!-- mcp-name: io.github.someone/demo-mcp -->")
     )
+
+
+def test_generated_dependency_floor(tmp_path):
+    generate(PLAN, tmp_path / "a", SOURCE)
+    assert '"mcpsmith>=0.2"' in (tmp_path / "a/pyproject.toml").read_text(encoding="utf-8")

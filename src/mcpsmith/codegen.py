@@ -294,7 +294,7 @@ def _env_vars(plan: Plan) -> list[dict[str, Any]]:
 
 
 def _pyproject(plan: Plan) -> str:
-    dep = "mcpsmith[stealth]>=0.1" if plan.impersonate else "mcpsmith>=0.1"
+    dep = "mcpsmith[stealth]>=0.2" if plan.impersonate else "mcpsmith>=0.2"
     author = f"authors = [{{ name = {_toml(plan.author)} }}]\n" if plan.author else ""
     urls = ""
     if plan.repository:

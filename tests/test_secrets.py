@@ -126,3 +126,20 @@ async def test_once_secret_401_reports_rejected_and_is_not_reread(monkeypatch):
         await api.call("GET", "/x")
     assert seen[0].headers["authorization"] == "Bearer otp"
     assert secrets.get("shop", "X_MCP_TOKEN") is None
+
+
+class NoBackend(KeyringBackend):
+    priority = 1
+
+    def get_password(self, service, username):
+        raise keyring.errors.NoKeyringError("no backend")
+
+    set_password = delete_password = get_password
+
+
+def test_no_keychain_get_is_none_and_cli_explains(capsys):
+    keyring.set_keyring(NoBackend())
+    assert secrets.get("shop", "TOKEN") is None
+    assert main(["secret", "list", "shop"]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("mcpsmith: error:") and "environment variable" in err

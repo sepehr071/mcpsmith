@@ -144,3 +144,24 @@ async def test_bad_name_rejected(name, hub_home):
         (hub_home / "browser.json").write_text(json.dumps({"port": fake.port, "proxy": None}))
         with pytest.raises(ValueError):
             await Recorder().start(name, [])
+
+
+@pytest.mark.anyio
+async def test_custom_secret_headers_and_query_values_are_dropped(hub_home):
+    with FakeCdp({"Network.getResponseBody": body_for}) as fake:
+        (hub_home / "browser.json").write_text(json.dumps({"port": fake.port, "proxy": None}))
+        rec = Recorder()
+        await rec.start("shop", [])
+        fake.emit("Target.attachedToTarget", {"sessionId": "s1", "targetInfo": {"type": "page", "targetId": "t"}})
+        await until(lambda: ("Network.enable", {}, "s1") in fake.calls)
+        sent(
+            fake,
+            "1",
+            "https://api.shop.test/s?api_key=AKEY123&access_token=ATOK456&q=shoes",
+            headers={"X-Api-Key": "HKEY789", "Accept": "application/json"},
+        )
+        done(fake, "1")
+        await until(lambda: sum("body" in e for e in rec.entries.values()) == 1)
+        text = (await rec.stop()).read_text()
+    assert not any(s in text for s in ("AKEY123", "ATOK456", "HKEY789"))
+    assert "q=shoes" in text

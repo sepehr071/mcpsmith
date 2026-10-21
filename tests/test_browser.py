@@ -93,3 +93,18 @@ def test_find_chrome_env_and_missing(monkeypatch, tmp_path):
     monkeypatch.setattr(browser, "_CANDIDATES", [str(tmp_path / "nada")])
     with pytest.raises(RuntimeError, match="nada"):
         browser.find_chrome()
+
+
+def test_launch_drops_proxy_credentials(popen, hub_home, monkeypatch, capsys):
+    monkeypatch.setenv("HTTPS_PROXY", "http://u:p@h:1")
+    info = browser.launch(port=1)
+    assert info["proxy"] == "http://h:1"
+    assert "--proxy-server=http://h:1" in popen["cmd"]
+    out = capsys.readouterr().out
+    assert "credentials dropped" in out
+    assert "u:p" not in out + (hub_home / "browser.json").read_text() + " ".join(popen["cmd"])
+
+
+def test_launch_schemeless_proxy(popen, monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "h:1")
+    assert browser.launch(port=1)["proxy"] == "http://h:1"

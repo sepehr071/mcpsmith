@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlsplit
 
 from . import browser
-from .importers.har import _scrub
+from .importers.har import _is_secret, _scrub
 
 MAX_BODY = 2_000_000
 DROPPED = "<dropped>"
@@ -21,10 +21,18 @@ SECRETISH = re.compile(r"pass|token|secret|auth|key|sig|cookie|session", re.I)
 TEXTUAL = re.compile(r"json|text|xml|javascript|x-www-form-urlencoded", re.I)
 
 
+def _url(url: str) -> str:
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    pairs = [(k, DROPPED if _is_secret(k) else v) for k, v in parse_qsl(parts.query, keep_blank_values=True)]
+    return parts._replace(query=urlencode(pairs)).geturl()
+
+
 def _headers(h: dict | None) -> list[dict]:
     out = []
     for k, v in (h or {}).items():
-        secret = k.lower() in SECRET_HEADERS or any(p in k.lower() for p in SECRET_PARTS)
+        secret = k.lower() in SECRET_HEADERS or any(p in k.lower() for p in SECRET_PARTS) or _is_secret(k)
         out.append({"name": k, "value": DROPPED if secret else str(v)})
     return out
 
@@ -169,7 +177,7 @@ def _entry(e: dict) -> dict:
         "time": 0,
         "request": {
             "method": req["method"],
-            "url": req["url"],
+            "url": _url(req["url"]),
             "httpVersion": "HTTP/1.1",
             "headers": _headers(req.get("headers")),
             "queryString": [],

@@ -166,6 +166,17 @@ def cmd_guide(args) -> int:
 
 
 def cmd_secret(args) -> int:
+    from keyring.errors import KeyringError
+
+    try:
+        return _secret(args)
+    except KeyringError as e:
+        raise RuntimeError(
+            f"no usable keychain ({e}); set the {args.name or 'secret'} environment variable instead"
+        ) from e
+
+
+def _secret(args) -> int:
     import getpass
 
     from . import secrets

@@ -21,7 +21,7 @@ Without a shell, use the MCP tools: `smith_guide`, `smith_inspect`, `smith_draft
 
 Live hub (no project needed; connections are personal, stored under `~/.mcpsmith`, override with `MCPSMITH_HOME`):
 
-- `mcpsmith browser [--port N] [--no-proxy]` starts the shared Chrome the developer logs in with; point Chrome DevTools MCP at it: `npx chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9222`. Never use DevTools `get_network_request` (it prints cookies).
+- `mcpsmith browser [--port N] [--no-proxy]` starts the shared Chrome the developer logs in with; point Chrome DevTools MCP at it: `npx chrome-devtools-mcp@1.11.0 --browser-url=http://127.0.0.1:9222`. Never use DevTools `get_network_request` (it prints cookies).
 - `smith_record_start(name, hosts)` / `smith_record_stop(name)` record API traffic from that Chrome into a HAR; then `smith_inspect`, edit the plan, `smith_validate`.
 - `smith_connect(workdir, name)` makes the plan's tools live; `smith_connections`, `smith_tools(connection)`, `smith_call(connection, tool, args)` (read-only tools), `smith_disconnect(name)`. CLI: `mcpsmith connections`.
 - Credentials come from the developer: `mcpsmith secret set|list|delete <connection> [NAME] [--once]`; never in chat or plans.

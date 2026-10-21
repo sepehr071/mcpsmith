@@ -57,11 +57,21 @@ def status() -> dict | None:
     return info if _version(info["port"]) else None
 
 
+def clean_proxy(proxy: str | None) -> str | None:
+    """scheme://host:port only: a bare host:port gets http://, user:pass is dropped (Chrome ignores it anyway)."""
+    if not proxy:
+        return None
+    url = httpx.URL(proxy if "://" in proxy else "http://" + proxy)
+    return str(url.copy_with(username=None, password=None))
+
+
 def launch(port: int = 9222, proxy: str | None = None, no_proxy: bool = False) -> dict:
     """Start Chrome detached (or reuse one already answering on the port); remember it in browser.json."""
     if proxy is None and not no_proxy:
         proxy = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
-    info = {"port": port, "proxy": None if no_proxy else proxy}
+    if proxy and not no_proxy and "@" in proxy.split("://")[-1].split("/")[0]:
+        print("mcpsmith: warning: authenticated proxies are not supported for the shared Chrome; credentials dropped")
+    info = {"port": port, "proxy": None if no_proxy else clean_proxy(proxy)}
     if not _version(port):
         cmd = [
             str(find_chrome()),
@@ -143,6 +153,10 @@ class Cdp:
 
 async def cookies_for(host: str, port: int) -> dict[str, str]:
     """Cookies of the shared browser that apply to host, as {name: value}. Held in memory only."""
-    async with await Cdp.connect(port) as cdp:
-        cookies = (await cdp.call("Storage.getCookies"))["cookies"]
+
+    async def read() -> list[dict]:
+        async with await Cdp.connect(port) as cdp:
+            return (await cdp.call("Storage.getCookies"))["cookies"]
+
+    cookies = await asyncio.wait_for(read(), timeout=10)
     return {c["name"]: c["value"] for c in cookies if host == (d := c["domain"].lstrip(".")) or host.endswith("." + d)}

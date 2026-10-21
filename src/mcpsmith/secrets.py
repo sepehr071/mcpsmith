@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 
 import keyring
-from keyring.errors import PasswordDeleteError
+from keyring.errors import KeyringError, PasswordDeleteError
 
+log = logging.getLogger(__name__)
 INDEX = "__names__"  # keyring cannot list entries; this one holds {name: once} as JSON
 
 
@@ -31,9 +33,13 @@ def _check(name: str) -> None:
 def get(connection: str, name: str) -> str | None:
     """The stored value, or None. A `once` value is deleted as it is read."""
     _check(name)
-    value = keyring.get_password(_service(connection), name)
-    if value is not None and _index(connection).get(name):
-        delete(connection, name)
+    try:
+        value = keyring.get_password(_service(connection), name)
+        if value is not None and _index(connection).get(name):
+            delete(connection, name)
+    except KeyringError as e:
+        log.debug("keychain unavailable for %s: %s", name, type(e).__name__)
+        return None
     return value
 
 

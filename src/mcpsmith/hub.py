@@ -7,6 +7,7 @@ import datetime
 import json
 import re
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +45,9 @@ class Hub:
 
     def _proxy(self) -> str | None:
         try:
-            return json.loads((browser.home() / "browser.json").read_text(encoding="utf-8")).get("proxy")
+            return browser.clean_proxy(
+                json.loads((browser.home() / "browser.json").read_text(encoding="utf-8")).get("proxy")
+            )
         except (OSError, ValueError):
             return None
 
@@ -78,16 +81,20 @@ class Hub:
             method, url = endpoint_of(t, plan, source)
             if method == "POST" and t.read_only and MUTATING.search(url):
                 warnings.append(f"WARNING {t.name}: POST {url} looks like it changes data but is read_only")
-        if name in self._conns:
-            self.disconnect(name)
+        # workdir may be the saved dir itself: build the new dir from memory, then swap it in
         dest = self._dir(name)
-        dest.mkdir(parents=True, exist_ok=True)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = Path(tempfile.mkdtemp(dir=dest.parent.parent))
         for f in ("plan.yaml", "source.json"):
             if (workdir / f).exists():
-                shutil.copyfile(workdir / f, dest / f)
+                (tmp / f).write_bytes((workdir / f).read_bytes())
         proxy = self._proxy()
         meta = {"proxy": proxy, "created": datetime.datetime.now(datetime.timezone.utc).isoformat()}
-        (dest / "meta.json").write_text(json.dumps(meta), encoding="utf-8", newline="\n")
+        (tmp / "meta.json").write_text(json.dumps(meta), encoding="utf-8", newline="\n")
+        if name in self._conns:
+            self.disconnect(name)
+        shutil.rmtree(dest, ignore_errors=True)
+        tmp.replace(dest)
         (workdir / "capture.har").unlink(missing_ok=True)
         self._register(name, plan, source, proxy)
         return {"connection": name, "tools": [t.name for t in plan.tools], "warnings": warnings}
