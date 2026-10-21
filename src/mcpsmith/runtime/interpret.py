@@ -54,8 +54,8 @@ def api_kwargs(plan: Plan, source: Source | None) -> dict[str, Any]:
 
 
 def make_api(plan: Plan, source: Source | None, *, proxy: str | None = None, cookie_provider=None, secret=None) -> Api:
-    # proxy, cookie_provider and secret are accepted for the hub; Tasks 4 and 7 wire them into Api.
-    return Api(**api_kwargs(plan, source))
+    # proxy and cookie_provider are accepted for the hub; Task 7 wires them into Api.
+    return Api(**api_kwargs(plan, source), secret=secret)
 
 
 def _value(a: ToolArg, v: Any, tz: str) -> Any:

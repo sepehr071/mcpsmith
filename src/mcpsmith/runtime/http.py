@@ -16,6 +16,7 @@ import os
 import random
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -78,6 +79,7 @@ class Api:
         impersonate: bool = False,
         concurrency: int = 2,
         cache_ttl: int = 60,
+        secret: Callable[[str], str | None] | None = None,
     ):
         if auth and (auth.get("type") not in AUTH_TYPES or not auth.get("env")):
             raise ValueError(f"auth needs type (one of {sorted(AUTH_TYPES)}) and env, got {auth!r}")
@@ -91,6 +93,7 @@ class Api:
         self.impersonate = impersonate
         self.concurrency = concurrency
         self.cache_ttl = cache_ttl
+        self.secret = secret
         self._transport: httpx.AsyncBaseTransport | None = None
         self._client: httpx.AsyncClient | None = None
         self._limit: asyncio.Semaphore | None = None
@@ -183,11 +186,15 @@ class Api:
         url = re.sub(r"\{([^{}]+)\}", fill, url)
         return url if url.startswith(("http://", "https://")) else f"{self.base_url}/{url.lstrip('/')}"
 
+    def _credential(self, env: str) -> str:
+        """The environment variable first, then the keychain-backed `secret` callback."""
+        return (os.environ.get(env) or (self.secret and self.secret(env)) or "").strip()
+
     def _add_auth(self, query: dict, headers: dict, cookies: dict) -> None:
         if not self.auth:
             return
         env, kind, param = self.auth["env"], self.auth["type"], self.auth.get("param", "")
-        secret = os.environ.get(env, "").strip()
+        secret = self._credential(env)
         if not secret:
             return  # public endpoints still work; a 401 then names the variable to set
 
@@ -276,7 +283,7 @@ class Api:
     def _status_message(self, r: httpx.Response, content: bytes, host: str) -> str:
         code, env = r.status_code, self.auth["env"] if self.auth else None
         if code == 401:
-            if env and not os.environ.get(env, "").strip():
+            if env and not self._credential(env):
                 return f"{host} requires authentication (HTTP 401). Set {env} to your API credential and restart."
             if env:
                 return f"{host} rejected the credentials (HTTP 401). Check that {env} holds a valid, unexpired value."
