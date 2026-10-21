@@ -13,10 +13,10 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from .design import validate
 from .model import ARG_RESERVED, REPO, Plan, Source, Tool, ToolArg, save_plan
+from .runtime.interpret import api_kwargs, auth_env, endpoint_of
 
 TEMPLATES = Path(__file__).parent / "templates"
 PY_TYPES = {"string": "str", "integer": "int", "number": "float", "boolean": "bool", "array": "list", "object": "dict"}
@@ -51,7 +51,7 @@ def generate(plan: Plan, out: Path, source: Source | None = None, force: bool = 
         ".gitignore": _template("gitignore"),
         f"src/{pkg}/__init__.py": _init(plan),
         f"src/{pkg}/server.py": _server(plan, source),
-        "tests/conftest.py": _template("conftest.py.tmpl", __PACKAGE__=pkg, __AUTH_ENV__=_py(_auth_env(plan))),
+        "tests/conftest.py": _template("conftest.py.tmpl", __PACKAGE__=pkg, __AUTH_ENV__=_py(auth_env(plan))),
         "tests/test_tools.py": _tests(plan, fixtures),
         **{f"tests/fixtures/{name}.json": text for name, text in fixtures.items()},
         ".github/workflows/ci.yml": _template("ci.yml"),
@@ -135,24 +135,6 @@ def _first_line(text: str) -> str:
 # ---------- server code ----------
 
 
-def _endpoint(t: Tool, plan: Plan, source: Source | None) -> tuple[str, str]:
-    """(METHOD, url) for a tool: a path relative to the base URL, or absolute when the endpoint lives elsewhere."""
-    ep = source.endpoint(t.endpoint) if source else None
-    if ep:
-        base = ep.base_url.rstrip("/")
-        url = f"{base}{ep.path}" if base and base != plan.base_url.rstrip("/") else ep.path
-        return ep.method.upper(), url
-    m = re.fullmatch(r"([A-Za-z]+)\s+(\S+)", t.endpoint.strip())
-    if not m:
-        where = "is not in the source" if source else "needs a source"
-        raise ValueError(f"Tool {t.name}: endpoint {t.endpoint!r} {where}; otherwise write it as 'METHOD /path'.")
-    return m.group(1).upper(), m.group(2)
-
-
-def _auth_env(plan: Plan) -> str | None:
-    return (plan.auth.env or f"{plan.env_prefix}_TOKEN") if plan.auth else None
-
-
 def _param(a: ToolArg) -> str:
     values = a.enum or (list(a.map) if a.map else None)
     kind = f"Literal[{', '.join(map(_py, values))}]" if values else PY_TYPES[a.type]
@@ -216,19 +198,8 @@ def _tool_fn(t: Tool, method: str, url: str) -> str:
 
 
 def _server(plan: Plan, source: Source | None) -> str:
-    endpoints = {t.name: _endpoint(t, plan, source) for t in plan.tools}
-    base_host = urlsplit(plan.base_url).hostname
-    extra = sorted({urlsplit(u).hostname for _, u in endpoints.values() if "://" in u} - {base_host})
-    kwargs = [f"base_url={_s(plan.base_url)}", f"env_prefix={_s(plan.env_prefix)}"]
-    if extra:
-        kwargs.append(f"hosts={_py([base_host, *extra])}")
-    kwargs.append(f"headers={_py(plan.headers)}")
-    if plan.auth:
-        auth = {"type": plan.auth.type, "env": _auth_env(plan)} | (
-            {"param": plan.auth.param} if plan.auth.param else {}
-        )
-        kwargs.append(f"auth={_py(auth)}")
-    kwargs += [f"impersonate={plan.impersonate}", f"concurrency={plan.concurrency}", f"cache_ttl={plan.cache_ttl}"]
+    endpoints = {t.name: endpoint_of(t, plan, source) for t in plan.tools}
+    kwargs = [f"{k}={_py(v)}" for k, v in api_kwargs(plan, source).items()]
 
     has_args = any(t.args for t in plan.tools)
     has_enum = any(a.enum or a.map for t in plan.tools for a in t.args)
@@ -318,7 +289,7 @@ def _env_vars(plan: Plan) -> list[dict[str, Any]]:
             "query": f"API credential, sent as the {a.param} query parameter.",
             "cookie": f"Session credential, sent as the {a.param} cookie.",
         }[a.type]
-        env.append({"name": _auth_env(plan), "description": how, "isRequired": True, "isSecret": True})
+        env.append({"name": auth_env(plan), "description": how, "isRequired": True, "isSecret": True})
     return env
 
 
@@ -395,7 +366,7 @@ def _cell(text: str) -> str:
 
 
 def _readme(plan: Plan, short: str) -> str:
-    env = _auth_env(plan)
+    env = auth_env(plan)
     add = (
         f"claude mcp add {short} -e {env}=<value> -- uvx {plan.name}"
         if env
@@ -505,7 +476,7 @@ def _skill(plan: Plan, short: str) -> str:
         if writes
         else f"- Read-only: these tools cannot change anything on {plan.title}."
     ]
-    if env := _auth_env(plan):
+    if env := auth_env(plan):
         rules.append(f"- Needs `{env}` set to the user's credential. On HTTP 401, ask the user to check it.")
     rules += [
         f"- On timeouts or HTTP 403, set `{plan.env_prefix}_PROXY` to an HTTP proxy (system proxy settings are ignored).",
