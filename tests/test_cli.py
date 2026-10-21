@@ -126,6 +126,7 @@ async def test_server_tools(client, spec, tmp_path):
     tools = {t.name: t for t in (await client.list_tools()).tools}
     assert set(tools) == {
         "smith_guide",
+        "smith_probe",
         "smith_inspect",
         "smith_draft",
         "smith_validate",

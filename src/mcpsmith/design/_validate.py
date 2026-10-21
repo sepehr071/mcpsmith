@@ -195,6 +195,8 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
 
         example = ep.response_example
         if example is None:
+            if not ep.verified:
+                warn(w, "endpoint is unverified (read from app code, no example response); run `mcpsmith probe`.")
             continue
         if not tool.output.fields and len(json.dumps(example, ensure_ascii=False)) > 4096:
             warn(f"{w}.output", "response example is over 4 KB; pick 5-15 useful `fields` instead of returning all.")

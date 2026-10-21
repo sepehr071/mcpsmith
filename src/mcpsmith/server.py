@@ -149,6 +149,36 @@ async def smith_generate(
     }
 
 
+@tool("Probe unverified endpoints", read_only=False)
+async def smith_probe(
+    workdir: Annotated[str, Field(description="Absolute workdir holding source.json.")],
+    limit: Annotated[int, Field(description="Most endpoints to probe.")] = 20,
+    writes: Annotated[
+        bool, Field(description="Also call non-GET endpoints on the live API. Only after the user agrees.")
+    ] = False,
+) -> dict:
+    """Call unverified GET endpoints live with the user's own credentials and store scrubbed example responses.
+
+    Endpoints read from an app's code have no example response. Non-GET endpoints are skipped unless writes=true,
+    which needs the user's confirmation. Next: smith_draft or smith_validate.
+    """
+    from .model import save_source
+    from .probe import run as run_probe
+
+    wd = _paths(workdir)
+    source = load_workdir_source(wd)
+    if source is None:
+        raise ValueError(f"{wd / 'source.json'} not found; run smith_inspect first")
+    results = await asyncio.to_thread(run_probe, source, writes=writes, limit=limit)
+    save_source(source, wd / "source.json")
+    return {
+        "verified": sum(r.ok for r in results),
+        "failed": sum(not r.ok and not r.skipped_reason for r in results),
+        "skipped": sum(bool(r.skipped_reason) for r in results),
+        "results": [dataclasses.asdict(r) for r in results],
+    }
+
+
 @tool("Check a generated server live", read_only=False)
 async def smith_check(
     project: Annotated[str, Field(description="Absolute path of a generated project directory.")],

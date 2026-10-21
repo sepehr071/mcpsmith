@@ -200,7 +200,7 @@ def draft(source: Source, name: str | None = None) -> Plan:
         env_prefix = "MCP_" + env_prefix
 
     eps = [e for e in source.endpoints if not _is_noise(e)]
-    eps.sort(key=lambda e: (e.method.upper() != "GET", -e.count))
+    eps.sort(key=lambda e: (not e.verified, e.method.upper() != "GET", -e.count))
     tools: list[Tool] = []
     taken: set[str] = set()
     for e in eps[:MAX_TOOLS]:

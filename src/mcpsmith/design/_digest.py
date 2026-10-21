@@ -55,6 +55,8 @@ def _endpoint(e: Endpoint, level: int) -> str:
     head = f"### {e.id}\n{e.method.upper()} {e.path}"
     if e.count > 1:
         head += f"  (seen {e.count}x)"
+    if not e.verified:
+        head += "  UNVERIFIED (read from app code, no response seen)"
     if e.base_url:
         head += f"  base: {e.base_url}"
     if e.auth:

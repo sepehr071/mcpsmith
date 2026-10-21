@@ -158,6 +158,26 @@ def cmd_check(args) -> int:
     return 0 if all(r.ok for r in results) else 1
 
 
+def cmd_probe(args) -> int:
+    from .probe import run
+
+    workdir = Path(args.workdir)
+    source = load_workdir_source(workdir)
+    if source is None:
+        raise ValueError(f"{workdir / 'source.json'} not found; run `mcpsmith inspect` first")
+    results = run(source, writes=args.writes, limit=args.limit)
+    save_source(source, workdir / "source.json")
+    for r in results:
+        if r.skipped_reason:
+            print(f"SKIP {r.endpoint}  {r.skipped_reason}")
+        elif r.ok:
+            print(f"OK   {r.endpoint}  {r.chars} chars")
+        else:
+            print(f"FAIL {r.endpoint}  {r.error}")
+    tried = [r for r in results if not r.skipped_reason]
+    return 1 if tried and not any(r.ok for r in tried) else 0
+
+
 def cmd_guide(args) -> int:
     from .design import guide
 
@@ -285,6 +305,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--writes", action="store_true", help="also call tools that change data (read_only: false)")
+
+    sp = command(
+        "probe", cmd_probe, "call unverified GET endpoints live to capture example responses; exit 1 if all fail"
+    )
+    sp.add_argument("--limit", type=int, default=20, help="most endpoints to probe (default 20)")
+    sp.add_argument("--writes", action="store_true", help="also probe non-GET endpoints (may change data)")
 
     sp = command("secret", cmd_secret, "store a connection's credentials in the OS keychain", workdir=False)
     sp.add_argument("action", choices=["set", "list", "delete"])
