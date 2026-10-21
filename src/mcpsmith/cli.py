@@ -184,6 +184,17 @@ def cmd_secret(args) -> int:
     return 0
 
 
+def cmd_browser(args) -> int:
+    from . import browser
+
+    info = browser.launch(args.port, no_proxy=args.no_proxy)
+    print(
+        f"Chrome on port {info['port']} (proxy: {info['proxy'] or 'none'}), profile {browser.home() / 'chrome-profile'}"
+    )
+    print("next: open the site in this window and log in")
+    return 0
+
+
 def cmd_mcp(args) -> int:
     from .server import main as serve
 
@@ -246,6 +257,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("connection")
     sp.add_argument("name", nargs="?", help="secret name, e.g. SHOP_MCP_TOKEN (set, delete)")
     sp.add_argument("--once", action="store_true", help="forget the value after its first use (set)")
+
+    sp = command("browser", cmd_browser, "start (or reuse) the shared Chrome you log in with", workdir=False)
+    sp.add_argument("--port", type=int, default=9222)
+    sp.add_argument("--no-proxy", action="store_true", help="do not pass HTTPS_PROXY on to Chrome")
 
     command("guide", cmd_guide, "print the tool-design rules for plan.yaml", workdir=False)
     command("mcp", cmd_mcp, "run the mcpsmith MCP server on stdio", workdir=False)
