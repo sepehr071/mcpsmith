@@ -26,6 +26,9 @@ descriptions, argument descriptions and the shaped output. Design for that reade
 - Argument names are plain English the agent would guess: `query`, `category_id`, `min_price`, `page`,
   `sort`, not wire names like `q`, `cat`, `filters.minPrice`, `pg`. The wire name goes in `to`.
 - Output field names are plain too: `price` not `prc_v2`, `rating_count` not `rc`.
+- Rename cryptic wire names; never expose them. Convert formats with transforms instead of asking the model to
+  compute: unix times, minute counts and currency units go through `Output.transforms`, dates the API wants as
+  unix time through `ToolArg.transform` (see the plan field reference).
 
 ## Write descriptions
 
@@ -87,7 +90,9 @@ Raw API responses waste the agent's context and bury the answer. For every tool:
 Plan: `name` (e.g. `petstore-mcp`), `title`, `description` (<= 100 chars), `instructions`, `prefix` (tool name
 prefix, e.g. `pet`), `version`, `base_url`, `env_prefix` (upper case, `^[A-Z][A-Z0-9_]*$`, ending in `_MCP`; `auth.env` must start with it; e.g.
 `PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic|browser, param, env, login_path}`;
-`browser` and `login_path` only work in the hub, not in exported servers),
+`browser` and `login_path` only work in the hub, not in exported servers: `browser` reuses the developer's
+logged-in shared Chrome session, `login_path` is the path prefix the site redirects to when logged out, e.g.
+`/login`; `generate` refuses browser-auth plans, switch to bearer/header/cookie auth to export),
 `impersonate`, `concurrency`, `cache_ttl`, `timezone` (IANA name for date transforms; empty = system local),
 `author`, `repository`, `tools`.
 

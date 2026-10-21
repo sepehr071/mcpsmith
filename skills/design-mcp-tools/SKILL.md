@@ -31,11 +31,14 @@ Arguments
 - Add `enum`, `minimum`, `maximum`, `default` where known. Required only when the call cannot work without it (a required arg cannot have a default).
 - Cut args the model never needs; pin constants with `fixed:`.
 - Cryptic wire values (sort codes, index names): use `map: {newest: sort_date_desc}` so the model sees plain words.
+- Cryptic wire names (`emp_id`, `dt_from`, `Item_dev`): rename the arg to a plain word and keep the wire name in `to:`.
+- Dates and numbers the API wants in another format: `transform` on the arg (`date->unix`, `date->unix_end` for an inclusive end day, `toman->rial`, `int->str`; also `jalali->...` for the Persian calendar). The model passes `YYYY-MM-DD`; day boundaries follow plan `timezone` (IANA name, e.g. `Europe/Berlin`; empty = system local zone).
 - A public key the site ships to every visitor may go in `fixed:`; a user's own token stays in `auth` (env var).
 - Each arg `to:` is one of `path.<n>`, `query.<n>`, `header.<n>`, `cookie.<n>`, `body`, `body.<a.b>`.
 
 Output
 - `output.root` points at the useful part; `output.fields` maps short names to dotted paths. Compact: id, title/name, price, url, one-line status. Drop images arrays, tracking, HTML, nulls.
+- Convert on the way out with `output.transforms` (output name -> `unix->date`, `unix->datetime`, `minutes->hh:mm`, `rial->toman`, `date->jalali`) so the model never reads raw unix times or minute counts.
 - Keep every id or slug the next tool needs as input.
 - `max_items` on lists (the result also reports the total count); lower `clip` for long strings.
 - Paginated APIs: expose `page` (or cursor) as an arg and mention in the description how to get the next page.
@@ -45,7 +48,8 @@ Safety and server
 - `read_only: true` only for GET-like reads; writes get `read_only: false` and say what they change.
 - `example` for every tool with required args; real values that return data.
 - `instructions`: the cross-tool workflow ("search, then details by id"), units, currency, language, rate limits, limits of the data.
-- Secrets only via env vars (`<P>_...`), never in args or descriptions.
+- Secrets only via env vars (`<P>_...`) or `mcpsmith secret set`, never in args or descriptions.
+- Site that needs the user's login: `auth: {type: browser, login_path: /login}` (hub only; `login_path` is where the site redirects when logged out). `generate` refuses it: switch to token auth to export.
 
 ## Measure
 

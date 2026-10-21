@@ -17,11 +17,20 @@ Ask the user which tasks the server should support, then:
 9. Edit the plan and `generate --force` to iterate. Hand edits to `server.py` are overwritten by regenerating.
 10. Publish: PyPI trusted publisher (workflow `publish.yml`, environment `pypi`), bump `version` in `pyproject.toml` and `server.json`, tag `v*`.
 
-Without a shell, use the MCP tools below (`smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check`; paths absolute).
+Without a shell, use the MCP tools: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check` (paths absolute).
+
+Live hub (no project needed; connections are personal, stored under `~/.mcpsmith`, override with `MCPSMITH_HOME`):
+
+- `mcpsmith browser [--port N] [--no-proxy]` starts the shared Chrome the developer logs in with; point Chrome DevTools MCP at it: `npx chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9222`. Never use DevTools `get_network_request` (it prints cookies).
+- `smith_record_start(name, hosts)` / `smith_record_stop(name)` record API traffic from that Chrome into a HAR; then `smith_inspect`, edit the plan, `smith_validate`.
+- `smith_connect(workdir, name)` makes the plan's tools live; `smith_connections`, `smith_tools(connection)`, `smith_call(connection, tool, args)` (read-only tools), `smith_disconnect(name)`. CLI: `mcpsmith connections`.
+- Credentials come from the developer: `mcpsmith secret set|list|delete <connection> [NAME] [--once]`; never in chat or plans.
+- `generate` is the publish path; it refuses `auth: browser` plans (switch to token auth).
 
 ## Skills
 
 - `skills/build-mcp-server/SKILL.md`: the full workflow above.
+- `skills/extract-api/SKILL.md`: record a logged-in site in the shared Chrome and connect it as live tools.
 - `skills/design-mcp-tools/SKILL.md`: checklist for designing or reviewing tools, and how to measure output size.
 
 Codex, Cursor, Gemini CLI and others: read these files directly; they are plain Markdown.
@@ -43,7 +52,7 @@ uv run ruff check .
 uv run ruff format .
 ```
 
-- Layout: `src/mcpsmith/` (`model.py` is the data contract: `Source`, `Plan`; `importers/`, `design/`, `codegen/`, `runtime/`, `check.py`, `cli.py`); design notes in `docs/design.md`.
+- Layout: `src/mcpsmith/` (`model.py` is the data contract: `Source`, `Plan`; `importers/`, `design/`, `codegen.py`, `runtime/` with `transforms.py` and `interpret.py`, `hub.py`, `server.py`, `browser.py`, `secrets.py`, `check.py`, `cli.py`); design notes in `docs/design.md`.
 - Do not rename `model.py` fields without checking every stage that reads them.
 - `mcpsmith.runtime` is imported by every generated server: keep it small and backward compatible.
 - Ruff: line length 120, Python 3.10+.

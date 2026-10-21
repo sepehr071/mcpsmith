@@ -44,11 +44,34 @@ No API key needed: your coding agent is the designer.
   ```json
   {"mcpServers": {"mcpsmith": {"command": "uvx", "args": ["mcpsmith", "mcp"]}}}
   ```
-  Tools: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check` (paths absolute).
+  Tools: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check` (paths absolute), and for the hub `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_tools`, `smith_call`.
   MCP clients start servers without your shell's proxy variables; behind a proxy, add `"env": {"HTTPS_PROXY": "http://127.0.0.1:8080"}` so `smith_inspect` can fetch specs.
-- Skills: `skills/build-mcp-server` (the whole workflow) and `skills/design-mcp-tools` (design checklist). `AGENTS.md` points other agents (Codex, Cursor, Gemini CLI) at them.
+- Skills: `skills/build-mcp-server` (the whole workflow), `skills/extract-api` (logged-in sites into live tools) and `skills/design-mcp-tools` (design checklist). `AGENTS.md` points other agents (Codex, Cursor, Gemini CLI) at them.
 
 Then ask: "Build an MCP server for this OpenAPI file; users should be able to find pets and check stock."
+
+## Live hub
+
+Skip the project: connect a plan and its tools appear in your agent right away. The mcpsmith MCP server is the hub; connections are saved under `~/.mcpsmith` (`MCPSMITH_HOME`) and load again on restart. They are personal (one machine, one user); `generate` stays the way to publish.
+
+From the agent: `smith_inspect`, edit `plan.yaml`, `smith_validate`, then `smith_connect(workdir, name)` and call the new tools. If your client does not show tools added after start, use `smith_tools(connection)` and `smith_call(connection, tool, args)` (read-only tools only). `smith_connections` lists, `smith_disconnect(name)` removes (CLI: `mcpsmith connections`).
+
+Credentials come from you, never the chat: `mcpsmith secret set <connection> <ENV_NAME>` asks with a hidden prompt and stores the value in the OS keychain (`--once` forgets it after one use, for one-time codes; `list` and `delete` also exist).
+
+## Logged-in sites
+
+For a dashboard or portal with no public API, the agent records the site's own calls while you use it. The `extract-api` skill runs the whole flow.
+
+```bash
+mcpsmith browser                                                      # shared Chrome on port 9222 (--port N, --no-proxy)
+npx chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9222    # point Chrome DevTools MCP at it
+```
+
+1. Log in yourself in that Chrome window (passwords and 2FA never reach the agent).
+2. The agent calls `smith_record_start(name, hosts)`, browses each feature twice with different inputs, then `smith_record_stop(name)`, which writes a HAR with cookies and tokens dropped.
+3. It inspects, designs and connects the plan with `auth: {type: browser, login_path: /login}`. Calls reuse your Chrome session; when it expires the tool says to log in again.
+
+Agents must not use DevTools `get_network_request`: it prints request headers, including cookies. Plans convert formats with `transform` on arguments, `output.transforms` (`date->unix`, `date->unix_end`, `unix->date`, `unix->datetime`, `minutes->hh:mm`, `toman->rial`, `rial->toman`, `int->str`, plus optional Jalali calendar conversions) and `timezone` (IANA name; empty means the system's local zone). `generate` refuses browser-auth plans because they only work with your Chrome; switch to token or API-key auth to publish.
 
 ## Let mcpsmith call an LLM
 
