@@ -13,7 +13,7 @@ from mcpsmith.browser import clean_proxy
 
 SERVERS = {
     "mcpsmith": ["uvx", f"mcpsmith@{__version__}", "mcp"],
-    "chrome-devtools": ["npx", "-y", "chrome-devtools-mcp@1.11.0", "--browser-url=http://127.0.0.1:9222"],
+    "mcpsmith-chrome": ["npx", "-y", "chrome-devtools-mcp@1.11.0", "--browser-url=http://127.0.0.1:9222"],
 }
 
 

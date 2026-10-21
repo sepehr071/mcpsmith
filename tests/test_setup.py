@@ -37,11 +37,11 @@ def test_server_entry_shapes():
         "args": [f"mcpsmith@{__version__}", "mcp"],
         "env": ENV,
     }
-    win = server_entry("chrome-devtools", True, ENV)
+    win = server_entry("mcpsmith-chrome", True, ENV)
     assert win["command"] == "cmd"
     assert win["args"][:5] == ["/d", "/c", "npx", "-y", "chrome-devtools-mcp@1.11.0"]
     assert win["env"] == {}
-    assert server_entry("chrome-devtools", False, ENV)["command"] == "npx"
+    assert server_entry("mcpsmith-chrome", False, ENV)["command"] == "npx"
     assert server_entry("mcpsmith", True, ENV)["command"] == "uvx"
 
 
@@ -55,14 +55,14 @@ def test_proxy_env_strips_userinfo_and_ignores_other_vars():
 def test_json_agents_add_remove(agent_id):
     agent = AGENTS[agent_id]
     doc = {"theme": "dark", "mcpServers": {"other": {"command": "x"}}}
-    for name in ("mcpsmith", "chrome-devtools"):
+    for name in ("mcpsmith", "mcpsmith-chrome"):
         agent.add(doc, name, server_entry(name, False, ENV))
     assert doc["mcpServers"]["mcpsmith"] == {"type": "stdio", **server_entry("mcpsmith", False, ENV)}
-    assert doc["mcpServers"]["chrome-devtools"]["type"] == "stdio"
-    assert list(doc["mcpServers"]) == ["other", "mcpsmith", "chrome-devtools"]
+    assert doc["mcpServers"]["mcpsmith-chrome"]["type"] == "stdio"
+    assert list(doc["mcpServers"]) == ["other", "mcpsmith", "mcpsmith-chrome"]
     assert agent.has(doc, "mcpsmith")
     agent.remove(doc, "mcpsmith")
-    agent.remove(doc, "chrome-devtools")
+    agent.remove(doc, "mcpsmith-chrome")
     assert doc == {"theme": "dark", "mcpServers": {"other": {"command": "x"}}}
     assert agent.dump(doc).startswith('{\n  "theme"')
 
@@ -79,7 +79,7 @@ def test_codex_toml_keeps_comments_and_other_tables():
 
     doc = tomlkit.parse(path_text)
     agent.add(doc, "mcpsmith", server_entry("mcpsmith", False, ENV))
-    agent.add(doc, "chrome-devtools", server_entry("chrome-devtools", False, ENV))
+    agent.add(doc, "mcpsmith-chrome", server_entry("mcpsmith-chrome", False, ENV))
     out = tomlkit.parse(agent.dump(doc))
     assert out["mcp_servers"]["mcpsmith"] == {
         "command": "uvx",
@@ -87,10 +87,10 @@ def test_codex_toml_keeps_comments_and_other_tables():
         "startup_timeout_sec": 30,
         "env": ENV,
     }
-    assert "env" not in out["mcp_servers"]["chrome-devtools"]
+    assert "env" not in out["mcp_servers"]["mcpsmith-chrome"]
     assert "[mcp_servers.mcpsmith.env]" in agent.dump(doc) or "env = " in agent.dump(doc)
     agent.remove(doc, "mcpsmith")
-    agent.remove(doc, "chrome-devtools")
+    agent.remove(doc, "mcpsmith-chrome")
     assert agent.dump(doc).startswith(path_text)
     assert agent.has(doc, "other") and not agent.has(doc, "mcpsmith")
 
@@ -184,7 +184,7 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
     assert rc == 0 and calls == []
     assert (home / ".claude.json").read_bytes() == before
     assert not list(home.rglob("*.mcpsmith.bak")) and not (home / ".agents").exists()
-    assert out.count("add") >= 6 and "chrome-devtools" in out and "rea" in out and ".agents" in out
+    assert out.count("add") >= 6 and "mcpsmith-chrome" in out and "rea" in out and ".agents" in out
 
 
 def test_setup_remove_roundtrip(tmp_path):
@@ -195,7 +195,7 @@ def test_setup_remove_roundtrip(tmp_path):
     assert [c[-3:] for c in calls] == [["--client", "claude_code", "--yes"], ["--client", "codex", "--yes"]]
     assert "setup" in calls[0] and setup_run.REA in calls[0]
     cfg = json.loads((home / ".claude.json").read_text())
-    assert {"mcpsmith", "chrome-devtools", "o"} <= set(cfg["mcpServers"])
+    assert {"mcpsmith", "mcpsmith-chrome", "o"} <= set(cfg["mcpServers"])
     assert "mcp_servers.mcpsmith" in (home / ".codex" / "config.toml").read_text()
     for n in SKILLS:
         assert (home / ".claude" / "skills" / n / "SKILL.md").is_file()
@@ -245,14 +245,21 @@ def test_no_node_skips_chrome_and_rea(tmp_path, capsys):
     assert list(json.loads((home / ".claude.json").read_text())["mcpServers"]) == ["o", "mcpsmith"]
 
 
-def test_foreign_entry_left_alone(tmp_path):
+def test_other_entries_untouched_by_name(tmp_path):
     home = make_home(tmp_path)
-    cfg = {"mcpServers": {"chrome-devtools": {"command": "mine"}}}
-    (home / ".claude.json").write_text(json.dumps(cfg))
-    go(home, "--yes", "--agents", "claude", "--no-rea", "--no-skills")
-    assert json.loads((home / ".claude.json").read_text())["mcpServers"]["chrome-devtools"] == {"command": "mine"}
-    go(home, "--yes", "--agents", "claude", "--no-rea", "--no-skills", "--remove")
-    assert json.loads((home / ".claude.json").read_text()) == cfg
+    mine = {"command": "cmd", "args": ["/c", "npx", "-y", "chrome-devtools-mcp@1.10.1", "--isolated"]}
+    (home / ".claude.json").write_text(json.dumps({"mcpServers": {"chrome-devtools": mine}}))
+    own = '[mcp_servers.chrome-devtools]\ncommand = "npx"\nargs = ["chrome-devtools-mcp@1.10.1"]\n'
+    toml = TOML + "\n" + own
+    (home / ".codex" / "config.toml").write_text(toml, encoding="utf-8")
+    flags = ("--yes", "--agents", "claude,codex", "--no-rea", "--no-skills")
+    go(home, *flags)
+    servers = json.loads((home / ".claude.json").read_text())["mcpServers"]
+    assert servers["chrome-devtools"] == mine and {"mcpsmith", "mcpsmith-chrome"} <= set(servers)
+    assert own in (home / ".codex" / "config.toml").read_text("utf-8")
+    go(home, *flags, "--remove")
+    assert json.loads((home / ".claude.json").read_text()) == {"mcpServers": {"chrome-devtools": mine}}
+    assert (home / ".codex" / "config.toml").read_text(encoding="utf-8") == toml
 
 
 def test_verify_failure_restores(tmp_path, monkeypatch):

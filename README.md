@@ -12,7 +12,7 @@ Most generators mirror every endpoint as a tool and hand the model raw JSON, or 
 uvx mcpsmith setup
 ```
 
-Registers the `mcpsmith` and `chrome-devtools` MCP servers and copies the skills into each coding agent it finds (Claude Code, Codex, Cursor, Gemini CLI), and installs REA (`rea-agents`) for them. Options:
+Registers the `mcpsmith` and `mcpsmith-chrome` (Chrome DevTools) MCP servers and copies the skills into each coding agent it finds (Claude Code, Codex, Cursor, Gemini CLI), and installs REA (`rea-agents`) for them. Options:
 
 - `--dry-run` prints the plan and writes nothing.
 - `--agents claude,codex` limits it to those agents (default: the ones found).

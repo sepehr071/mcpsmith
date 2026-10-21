@@ -13,7 +13,7 @@ from mcpsmith.skills_path import skills_dir
 from .agents import AGENTS, proxy_env, server_entry
 
 REA = "rea-agents@6.7.0"
-MARKERS = {"mcpsmith": "mcpsmith@", "chrome-devtools": "chrome-devtools-mcp@"}
+NAMES = ("mcpsmith", "mcpsmith-chrome")  # entries we own; every other entry is never touched
 NO_NODE = "npx not found (install Node.js)"
 
 
@@ -41,11 +41,6 @@ def _same(src: Path, dst: Path) -> bool:
     )
 
 
-def _ours(name: str, entry) -> bool:
-    args = entry.get("args") if isinstance(entry, Mapping) else None
-    return isinstance(args, list) and any(MARKERS[name] in str(a) for a in args)
-
-
 def _servers(agent, doc) -> Mapping:
     servers = doc.get("mcp_servers" if agent.toml else "mcpServers", {})
     if not isinstance(servers, Mapping):
@@ -57,7 +52,7 @@ def _server_changes(agent, home, environ, remove, has_npx, windows) -> list[Chan
     path = agent.config_path(home, environ)
     servers = _servers(agent, agent.load(path))
     out = []
-    for name in MARKERS:
+    for name in NAMES:
         entry = server_entry(name, windows, proxy_env(environ))
         existing = servers.get(name)
 
@@ -67,16 +62,12 @@ def _server_changes(agent, home, environ, remove, has_npx, windows) -> list[Chan
         if remove:
             if existing is None:
                 out.append(make("skip", "not registered"))
-            elif _ours(name, existing):
-                out.append(make("remove", "registered by mcpsmith"))
             else:
-                out.append(make("skip", "not created by mcpsmith, left alone"))
-        elif name == "chrome-devtools" and not has_npx:
+                out.append(make("remove", "registered by mcpsmith"))
+        elif name == "mcpsmith-chrome" and not has_npx:
             out.append(make("skip", NO_NODE))
         elif existing is None:
             out.append(make("add", ""))
-        elif not _ours(name, existing):
-            out.append(make("skip", "exists and was not created by mcpsmith, left alone"))
         else:
             scratch = agent.add(agent.load(Path("/nonexistent/x")), name, entry)
             same = _servers(agent, scratch)[name] == existing
@@ -135,6 +126,8 @@ def _write_server(change: Change) -> str:
         else:
             agent.add(doc, change.name, change.entry)
         text = agent.dump(doc)
+        if agent.toml and change.action == "remove":
+            text = text.rstrip("\n") + "\n"  # drop the blank line tomlkit put before our table
         if original and b"\r\n" in original:
             text = text.replace("\n", "\r\n")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,7 +182,7 @@ def cmd(args, home=None, environ=None, which=shutil.which, runner=subprocess.run
         return 0
     changes = plan(home, environ, ids, not args.no_rea, not args.no_skills, args.remove, which)
     for c in changes:
-        print(f"{c.action:<7}{c.agent:<9}{c.kind:<7}{c.name + ' ' if c.name else ''}{c.target}  {c.reason}".rstrip())
+        print(f"{c.action:<7} {c.agent:<9} {c.kind:<7} {c.name + ' ' if c.name else ''}{c.target}  {c.reason}".rstrip())
     if args.dry_run:
         print("dry run: nothing written")
         return 0

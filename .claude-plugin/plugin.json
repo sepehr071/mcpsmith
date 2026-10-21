@@ -27,7 +27,7 @@
         "mcp"
       ]
     },
-    "chrome-devtools": {
+    "mcpsmith-chrome": {
       "command": "npx",
       "args": [
         "-y",
