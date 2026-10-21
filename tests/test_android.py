@@ -1,13 +1,16 @@
+import contextlib
 import json
-import subprocess
+import os
 from pathlib import Path
 
 import pytest
 
 from mcpsmith.cli import main
-from mcpsmith.importers import android
+from mcpsmith.importers import android, jadx
 
-FIXTURE = Path(__file__).parent / "fixtures" / "android" / "interface.java"
+FIXTURES = Path(__file__).parent / "fixtures" / "android"
+FIXTURE = FIXTURES / "interface.java"
+MAPPING = {"a": "GET", "t": "Path", "u": "Query"}
 
 
 @pytest.fixture(scope="module")
@@ -103,16 +106,61 @@ def test_not_an_interface_gives_empty_list_and_message():
     assert s.endpoints == [] and "no Retrofit" in s.description
 
 
-# ---------- REA wrappers ----------
+# ---------- minified names resolved from the app's request builder ----------
 
 
-class Runner:
-    def __init__(self, out, code=0):
-        self.out, self.code, self.calls = out, code, []
+def test_resolve_annotations_reads_instanceof_blocks():
+    got = android.resolve_annotations((FIXTURES / "builder.java").read_text(encoding="utf-8"))
+    assert got == {
+        "b": "DELETE",
+        "f": "GET",
+        "o": "POST",
+        "p": "PUT",
+        "k": "Headers",
+        "y": "Url",
+        "s": "Path",
+        "t": "Query",
+        "v": "QueryName",
+        "u": "QueryMap",
+        "i": "Header",
+        "a": "Body",
+        "c": "Field",
+    }
 
-    def __call__(self, cmd, **kw):
-        self.calls.append((cmd, kw))
-        return subprocess.CompletedProcess(cmd, self.code, json.dumps(self.out), "boom")
+
+def test_resolve_annotations_ignores_decoys_and_unclear_blocks():
+    java = """
+    String x = "GET";
+    void m(Object o) {
+        if (o instanceof q.a) { log("@Query and @Path"); }
+        if (o instanceof java.util.List) { log("@Body"); }
+        if (!(o instanceof q.b)) { log("@Body"); }
+    }
+    """
+    assert android.resolve_annotations(java) == {}
+
+
+def test_parse_with_mapping_gives_real_methods_and_no_minified_notes():
+    src = android.parse_interface(FIXTURE.read_text(encoding="utf-8"), annotations=MAPPING)
+    e = ep(src, "minified")
+    assert (e.method, e.path, e.id) == ("GET", "/api/v1/minified/{id}", "GET /api/v1/minified/{id}")
+    assert locs(e) == {"id": ("path", True), "limit": ("query", True)}
+    assert "minified" not in e.description and "minified" not in src.description
+    assert ep(src, "minifiedHttp").method == "PURGE"
+
+
+# ---------- JADX driver ----------
+
+
+def fake_jadx(monkeypatch, handler):
+    @contextlib.asynccontextmanager
+    async def session(apk, jar):
+        async def call(tool, args):
+            return handler(tool, args)
+
+        yield call
+
+    monkeypatch.setattr(jadx, "_session", session)
 
 
 @pytest.fixture
@@ -122,45 +170,102 @@ def apk(tmp_path):
     return f
 
 
-def test_class_source_runs_rea_outside_the_apk_directory(apk):
-    r = Runner({"code": "interface A {}"})
-    assert android.rea_class_source(apk, "com.x.Api", runner=r) == "interface A {}"
-    cmd, kw = r.calls[0]
-    assert "rea-agents@6.7.0" in cmd and "decompile" in cmd and str(apk.resolve()) in cmd
-    assert Path(kw["cwd"]).resolve() != apk.parent.resolve()
+def test_search_pages_through_every_result(monkeypatch, apk):
+    monkeypatch.setattr(jadx, "PAGE", 2)
+    names = ["a.A", "a.B", "a.C", "a.D", "a.E"]
+    seen = []
+
+    def handler(tool, args):
+        seen.append((args["offset"], args["max_scan"]))
+        items = [{"fqn": n} for n in names[args["offset"] : args["offset"] + 2]]
+        return json.dumps({"items": items, "max_scan_reached": False})
+
+    fake_jadx(monkeypatch, handler)
+    assert jadx.find_api_classes(apk) == names
+    assert seen[:3] == [(0, jadx.MAX_SCAN), (2, jadx.MAX_SCAN), (4, jadx.MAX_SCAN)]
 
 
-def test_class_name_and_missing_apk_are_rejected(apk, tmp_path):
+def test_search_that_hit_the_scan_cap_is_an_error(monkeypatch, apk):
+    fake_jadx(monkeypatch, lambda t, a: json.dumps({"items": [], "scanned": 5000, "max_scan_reached": True}))
+    with pytest.raises(RuntimeError, match="5000"):
+        jadx.find_api_classes(apk)
+
+
+def test_class_source_and_builder_annotations(monkeypatch, apk):
+    builder = (FIXTURES / "builder.java").read_text(encoding="utf-8")
+
+    def handler(tool, args):
+        if tool == "search_classes_by_keyword":
+            return json.dumps({"items": [{"fqn": "q8.q"}], "max_scan_reached": False})
+        return builder if args["class_name"] == "q8.q" else "interface Api {}"
+
+    fake_jadx(monkeypatch, handler)
+    assert jadx.class_source(apk, "com.x.Api") == "interface Api {}"
+    assert jadx.builder_annotations(apk)["f"] == "GET"
+
+
+def test_bad_class_name_and_missing_apk(monkeypatch, apk, tmp_path):
     with pytest.raises(ValueError):
-        android.rea_class_source(apk, "--evil", runner=Runner({}))
+        jadx.class_source(apk, "--evil")
+    monkeypatch.setenv("REA_JADX_MCP_JAR", str(tmp_path / "jar.jar"))
+    (tmp_path / "jar.jar").write_bytes(b"x")
     with pytest.raises(ValueError):
-        android.rea_class_source(tmp_path / "no.apk", "a.B", runner=Runner({}))
+        jadx.class_source(tmp_path / "no.apk", "a.B")
 
 
-def test_rea_failure_carries_the_install_hint(apk):
-    with pytest.raises(RuntimeError, match="doctor"):
-        android.rea_class_source(apk, "a.B", runner=Runner({}, code=1))
-
-
-def test_find_api_classes(apk):
-    out = {"matches": [{"className": "com.x.Api", "value": "api/v1/x"}, {"className": "com.x.Api"}, {"v": "a.b.Svc"}]}
-    assert android.find_api_classes(apk, runner=Runner(out)) == ["a.b.Svc", "com.x.Api"]
+def test_missing_jar_and_java_say_what_to_do(monkeypatch, apk, tmp_path):
+    monkeypatch.delenv("REA_JADX_MCP_JAR", raising=False)
+    with pytest.raises(RuntimeError, match="rea-agents setup.*--jadx-jar"):
+        jadx.class_source(apk, "a.B")
+    jar = tmp_path / "j.jar"
+    jar.write_bytes(b"x")
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    monkeypatch.setattr(jadx.shutil, "which", lambda _: None)
+    with pytest.raises(RuntimeError, match="Java"):
+        jadx.class_source(apk, "a.B", jar=str(jar))
 
 
 # ---------- CLI ----------
 
 
 def test_cli_lists_candidates_then_writes_source(apk, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(android, "find_api_classes", lambda a: ["com.x.Api"])
-    monkeypatch.setattr(android, "rea_class_source", lambda a, c: FIXTURE.read_text(encoding="utf-8"))
+    monkeypatch.setattr(jadx, "find_api_classes", lambda a, j=None: ["com.x.Api"])
+    monkeypatch.setattr(jadx, "class_source", lambda a, c, j=None: FIXTURE.read_text(encoding="utf-8"))
+    monkeypatch.setattr(jadx, "builder_annotations", lambda a, j=None: MAPPING)
     wd = str(tmp_path / "wd")
     assert main(["app-android", str(apk), "-w", wd]) == 0
     assert "com.x.Api" in capsys.readouterr().out and not (tmp_path / "wd" / "source.json").exists()
     assert main(["app-android", str(apk), "--class", "com.x.Api", "--base-url", "https://demo.test", "-w", wd]) == 0
     assert "mcpsmith probe" in capsys.readouterr().out
-    assert (tmp_path / "wd" / "source.json").exists() and (tmp_path / "wd" / "digest.md").exists()
+    saved = json.loads((tmp_path / "wd" / "source.json").read_text(encoding="utf-8"))
+    assert saved["kind"] == "app" and (tmp_path / "wd" / "digest.md").exists()
+    assert next(e for e in saved["endpoints"] if e["summary"] == "minified")["method"] == "GET"  # mapping applied
 
 
-def test_cli_empty_interface_exits_nonzero(apk, tmp_path, monkeypatch):
-    monkeypatch.setattr(android, "rea_class_source", lambda a, c: "class X {}")
-    assert main(["app-android", str(apk), "--class", "a.X", "-w", str(tmp_path / "wd")]) == 2
+def test_cli_source_file_needs_no_jar(tmp_path, monkeypatch):
+    monkeypatch.delenv("REA_JADX_MCP_JAR", raising=False)
+    wd = tmp_path / "wd"
+    assert main(["app-android", "--source", str(FIXTURE), "-w", str(wd)]) == 0
+    saved = json.loads((wd / "source.json").read_text(encoding="utf-8"))
+    assert saved["endpoints"] and any(e["method"] == "" for e in saved["endpoints"])  # no apk, no mapping
+
+
+def test_cli_needs_an_apk_or_a_source_and_rejects_empty_interfaces(apk, tmp_path):
+    assert main(["app-android", "-w", str(tmp_path / "wd")]) == 2
+    plain = tmp_path / "X.java"
+    plain.write_text("class X {}", encoding="utf-8")
+    assert main(["app-android", "--source", str(plain), "-w", str(tmp_path / "wd")]) == 2
+
+
+@pytest.mark.live
+def test_live_real_apk():
+    apk, jar = os.environ.get("MCPSMITH_TEST_APK"), os.environ.get("REA_JADX_MCP_JAR")
+    if not (apk and jar):
+        pytest.skip("set MCPSMITH_TEST_APK and REA_JADX_MCP_JAR")
+    classes = jadx.find_api_classes(Path(apk))
+    sources = {c: jadx.class_source(Path(apk), c) for c in classes}
+    java = max(sources.values(), key=lambda s: s.count("@"))
+    src = android.parse_interface(java, annotations=jadx.builder_annotations(Path(apk)))
+    assert len(src.endpoints) >= 110
+    assert all(e.method for e in src.endpoints)
+    assert any(e.method != "GET" for e in src.endpoints)

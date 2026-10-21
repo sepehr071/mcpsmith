@@ -1,36 +1,42 @@
 """Read the Retrofit interfaces of a decompiled Android app into a Source of unverified endpoints.
 
 Only declarations the app ships are read (request lines, parameter kinds); nothing here calls the app's API or
-defeats a protection. `rea_class_source` and `find_api_classes` ask the REA CLI (already installed by
-`mcpsmith setup`, with its own decompiler provider configured) for the decompiled text.
+defeats a protection. The decompiled text comes from `importers.jadx` (or any file the developer supplies). Release
+builds rename the Retrofit annotations; `resolve_annotations` reads the app's own Retrofit request builder, which
+names them again.
 """
 
 from __future__ import annotations
 
-import json
 import re
-import shutil
-import subprocess
-import tempfile
-from pathlib import Path
+from collections import Counter
 from urllib.parse import urlsplit
 
 from mcpsmith.importers.har import _is_credential, _scrub
 from mcpsmith.model import AuthScheme, Endpoint, Param, Source
-from mcpsmith.setup.run import REA
 
 VERBS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 IGNORED = {"Override", "Nullable", "NonNull", "NotNull", "Keep", "Deprecated", "Streaming", "Suppress", "Tag"}
 PRIMITIVES = {"int", "long", "short", "byte", "float", "double", "boolean", "char"}
 PATH_LIKE = re.compile(r"[\w\-./{}~:%]*")
-CLASS_NAME = re.compile(r"[A-Za-z_$][\w$]*(?:\.[\w$]+)*")
-FQ_CLASS = re.compile(r"(?:[A-Za-z_]\w*\.)+[A-Z_$][\w$]*")
-API_STRING = r"\"(api|rest|v[0-9]+)/|/v[0-9]+/"
-HINT = "REA must be installed (`mcpsmith setup`) and its Android decompiler provider configured; `npx -y {rea} doctor` says what is missing."
+PARAM_NAMES = {"Path", "Query", "QueryMap", "QueryName", "Field", "FieldMap", "Body", "Part", "PartMap"} | {
+    "Header",
+    "HeaderMap",
+    "Url",
+    "Tag",
+    "Headers",
+}
+NOT_APP_TYPE = ("java.", "javax.", "android.", "kotlin.", "okhttp3.")
 
 
-def parse_interface(java: str, base_url: str = "", title: str = "") -> Source:
-    """Endpoints from one decompiled Retrofit interface; skipped methods and unresolved names are listed in `description`."""
+def parse_interface(
+    java: str, base_url: str = "", title: str = "", annotations: dict[str, str] | None = None
+) -> Source:
+    """Endpoints from one decompiled Retrofit interface; skipped methods and unresolved names are listed in `description`.
+
+    `annotations` maps a minified annotation name to its Retrofit meaning (see `resolve_annotations`).
+    """
+    names = annotations or {}
     text = _strip_comments(java)
     schemes: dict[str, AuthScheme] = {}
     notes: list[str] = []
@@ -38,9 +44,9 @@ def parse_interface(java: str, base_url: str = "", title: str = "") -> Source:
     for stmt in _split(text, ";", nest=False):
         if (parsed := _statement(stmt)) is None:
             continue
-        name, annotations, params = parsed
+        name, anns, params = parsed
         try:
-            ep = _endpoint(name, annotations, params, schemes)
+            ep = _endpoint(name, anns, params, schemes, names)
         except _Skip as e:
             notes.append(f"skipped {name}: {e}")
             continue
@@ -55,7 +61,7 @@ def parse_interface(java: str, base_url: str = "", title: str = "") -> Source:
         e.id = e.summary if e.method == "" or keys.count(key) > 1 else key
     iface = re.search(r"\binterface\s+(\w+)", text)
     return Source(
-        kind="har",
+        kind="app",
         title=title or (iface.group(1) if iface else "Android app"),
         description="\n".join(notes),
         base_url=base_url,
@@ -99,8 +105,8 @@ def _split(s: str, sep: str, nest: bool = True) -> list[str]:
     return parts
 
 
-def _balanced(s: str, i: int) -> int:
-    """Index just past the parenthesis group opening at s[i]."""
+def _balanced(s: str, i: int, open_: str = "(", close: str = ")") -> int:
+    """Index just past the bracket group opening at s[i]."""
     depth = 0
     while i < len(s):
         c = s[i]
@@ -108,9 +114,9 @@ def _balanced(s: str, i: int) -> int:
             i += 1
             while i < len(s) and s[i] != '"':
                 i += 2 if s[i] == "\\" else 1
-        elif c == "(":
+        elif c == open_:
             depth += 1
-        elif c == ")":
+        elif c == close:
             depth -= 1
             if depth == 0:
                 return i + 1
@@ -186,10 +192,17 @@ def _literal(expr: str) -> str | None:
 # ---------- one method ----------
 
 
-def _endpoint(name: str, annotations: list[tuple[str, str]], params: list[str], schemes: dict[str, AuthScheme]):
+def _endpoint(
+    name: str,
+    annotations: list[tuple[str, str]],
+    params: list[str],
+    schemes: dict[str, AuthScheme],
+    names: dict[str, str],
+):
     method, path, has_body, encoding, headers, unresolved = None, None, False, "", [], []
     guessed: list[tuple[str, str]] = []
     for an, raw in annotations:
+        an = names.get(an, an)
         args = _args(raw)
         keys = {k for k, _ in args}
         if an in VERBS:
@@ -244,6 +257,7 @@ def _endpoint(name: str, annotations: list[tuple[str, str]], params: list[str], 
             plist.append(Param(name=k, location="header", example=_scrub(v, k)))
     for raw in params:
         ans, rest = _annotations(raw)
+        ans = [(names.get(a, a), r) for a, r in ans]
         ans = [a for a in ans if a[0] not in IGNORED]
         tokens = re.sub(r"\bfinal\b", "", rest).split()
         if not ans or len(tokens) < 2:
@@ -329,6 +343,8 @@ def _param(an, label, var, jtype, placeholders, unresolved) -> Param | None:
         return Param(name=var, location="header", type="object", description="map of extra headers")
     if an == "Url":
         return Param(name=var, location="path", required=True, description="full URL")
+    if an == "QueryName":
+        return None  # the parameter's value is the query key; nothing to describe
     # a minified annotation name: use its structure and the path placeholders
     if label is not None:
         if label in placeholders:
@@ -341,62 +357,56 @@ def _param(an, label, var, jtype, placeholders, unresolved) -> Param | None:
     return None
 
 
-# ---------- REA ----------
+# ---------- minified annotation names ----------
+
+IF_INSTANCEOF = re.compile(r"\bif\s*\(\s*\w+\s+instanceof\s+([\w.$]+)\s*\)\s*\{")
+FLAG_INSTANCEOF = re.compile(r"\b(\w+)\s*=\s*\w+\s+instanceof\s+([\w.$]+)\s*;")
+STRING = re.compile(r'"(?:\\.|[^"\\])*"')
 
 
-def _rea(args: list[str], runner, apk: Path):
-    if not apk.is_file():
-        raise ValueError(f"{apk}: not a file")
-    cmd = [shutil.which("npx") or "npx", "-y", REA, *args, "--format", "json"]
-    # a neutral working directory: nothing is ever run from where the APK lives
-    with tempfile.TemporaryDirectory() as cwd:
-        try:
-            r = runner(cmd, capture_output=True, text=True, encoding="utf-8", timeout=600, cwd=cwd)
-        except (OSError, subprocess.TimeoutExpired) as e:
-            raise RuntimeError(f"could not run REA ({e}). {HINT.format(rea=REA)}") from e
-    if r.returncode:
-        tail = (r.stderr or r.stdout or "").strip()[-400:]
-        raise RuntimeError(f"REA failed: {tail}. {HINT.format(rea=REA)}")
-    try:
-        return json.loads(r.stdout)
-    except ValueError:
-        return r.stdout
+def resolve_annotations(builder_java: str) -> dict[str, str]:
+    """Minified annotation name -> Retrofit meaning, read from the app's own Retrofit request builder.
 
-
-def _strings(obj) -> list[str]:
-    if isinstance(obj, str):
-        return [obj]
-    if isinstance(obj, dict):
-        return [s for v in obj.values() for s in _strings(v)]
-    if isinstance(obj, list):
-        return [s for v in obj for s in _strings(v)]
-    return []
-
-
-def rea_class_source(apk: Path, class_name: str, runner=subprocess.run) -> str:
-    """The decompiled source of one class, from REA."""
-    if not CLASS_NAME.fullmatch(class_name):
-        raise ValueError(f"{class_name!r} is not a class name like com.example.api.Service")
-    return "\n".join(_strings(_rea(["decompile", str(apk.resolve()), class_name], runner, apk)))
-
-
-def find_api_classes(apk: Path, runner=subprocess.run) -> list[str]:
-    """Class names whose code holds a path-like string such as "api/..." or "/v1/...", via REA's string search."""
-    out = _rea(["search", str(apk.resolve()), f"--pattern={API_STRING}", "--mode", "regex"], runner, apk)
-    names: list[str] = []
-
-    def walk(o) -> None:
-        if isinstance(o, dict):
-            for k, v in o.items():
-                if "class" in k.lower() and isinstance(v, str) and CLASS_NAME.fullmatch(v):
-                    names.append(v)
-                else:
-                    walk(v)
-        elif isinstance(o, list):
-            for v in o:
-                walk(v)
-        elif isinstance(o, str) and FQ_CLASS.fullmatch(o):
-            names.append(o)
-
-    walk(out)
-    return sorted(dict.fromkeys(names))
+    That class tests each annotation with `instanceof` and names it again in its error messages: a block holding
+    "DELETE" is the @DELETE class; a block whose strings mention "@Query" most is @Query. Only the block of the
+    `instanceof` is read, so a stray literal elsewhere counts for nothing. A block with no clear answer is left out.
+    """
+    text = _strip_comments(builder_java)
+    blocks: list[tuple[str, str]] = []  # (annotation class, block text)
+    for m in IF_INSTANCEOF.finditer(text):
+        blocks.append((m.group(1), text[m.end() - 1 : _balanced(text, m.end() - 1, "{", "}")]))
+    for m in FLAG_INSTANCEOF.finditer(text):  # `boolean z = a instanceof X;` ... `if (z) {`
+        if use := re.compile(rf"\bif\s*\(\s*{re.escape(m.group(1))}\s*\)\s*\{{").search(text, m.end()):
+            blocks.append((m.group(2), text[use.end() - 1 : _balanced(text, use.end() - 1, "{", "}")]))
+    out: dict[str, str] = {}
+    for cls, block in blocks:
+        if "." not in cls or cls.startswith(NOT_APP_TYPE):
+            continue
+        literals = STRING.findall(block)
+        counts = Counter(n for lit in literals for n in re.findall(r"@(\w+)", lit) if n in PARAM_NAMES)
+        top = counts.most_common(2)
+        if top and (len(top) == 1 or top[0][1] > top[1][1]):
+            meaning = top[0][0]
+        elif not top and (verb := next((v for v in (lit.strip('"') for lit in literals) if v in VERBS), None)):
+            meaning = verb
+        else:
+            continue
+        out.setdefault(cls.rsplit(".", 1)[-1], meaning)
+    # Blocks that name nothing: @Path's block checks a flag per earlier parameter kind and names it in the message
+    # ("... must not come after a @Query"); the block that sets that flag is that kind. @Header is the parameter
+    # block that reads allowUnsafeNonAsciiValues().
+    flags: dict[str, str] = {}
+    for cls, block in blocks:
+        if out.get(cls.rsplit(".", 1)[-1]) == "Path":
+            for flag, kind in re.findall(r'if\s*\(\s*\w+\.(\w+)\s*\)\s*\{\s*throw[^;]*?"[^"]*after a @(\w+)', block):
+                flags[flag] = kind
+    for cls, block in blocks:
+        simple = cls.rsplit(".", 1)[-1]
+        if simple in out or "." not in cls or cls.startswith(NOT_APP_TYPE):
+            continue
+        kinds = {flags[f] for f in re.findall(r"\b\w+\.(\w+)\s*=\s*true\s*;", block) if f in flags}
+        if len(kinds) == 1:
+            out[simple] = kinds.pop()
+        elif not kinds and "allowUnsafeNonAsciiValues()" in block and ".value()" in block:
+            out[simple] = "Header"
+    return out

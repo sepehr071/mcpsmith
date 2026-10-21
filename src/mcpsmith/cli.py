@@ -35,17 +35,36 @@ def inspect_source(source: str, workdir: Path, hosts: list[str] | None, budget: 
 
 
 def app_android(
-    apk: Path, class_name: str | None, base_url: str, workdir: Path
+    apk: Path | None,
+    class_name: str | None,
+    base_url: str,
+    workdir: Path,
+    jar: str | None = None,
+    source_file: Path | None = None,
 ) -> tuple[list[str], Source | None, str]:
-    """Without a class: candidate API classes. With one: write source.json + digest.md. Returns (candidates, source, digest)."""
-    from .design import digest
-    from .importers import android
+    """Without a class or source file: candidate API classes. Otherwise write source.json + digest.md.
 
-    if not class_name:
-        return android.find_api_classes(apk), None, ""
-    src = android.parse_interface(android.rea_class_source(apk, class_name), base_url)
+    The interface text comes from `source_file` (decompiled by any tool) or from the APK via the JADX jar. Returns
+    (candidates, source, digest).
+    """
+    from .design import digest
+    from .importers import android, jadx
+
+    if source_file:
+        java = source_file.read_text(encoding="utf-8-sig")
+    elif apk is None:
+        raise ValueError("give an APK path, or --source FILE with an already decompiled class")
+    elif not class_name:
+        return jadx.find_api_classes(apk, jar), None, ""
+    else:
+        java = jadx.class_source(apk, class_name, jar)
+    src = android.parse_interface(java, base_url)
+    if apk and (not src.endpoints or any(e.method == "" for e in src.endpoints)):
+        # release builds rename the annotations: the app's own Retrofit request builder names them again
+        if mapping := jadx.builder_annotations(apk, jar):
+            src = android.parse_interface(java, base_url, annotations=mapping)
     if not src.endpoints:
-        raise ValueError(f"no endpoints in {class_name}: {src.description}")
+        raise ValueError(f"no endpoints found: {src.description}")
     workdir.mkdir(parents=True, exist_ok=True)
     save_source(src, workdir / "source.json")
     text = digest(src)
@@ -198,7 +217,14 @@ def cmd_probe(args) -> int:
 
 
 def cmd_app_android(args) -> int:
-    classes, src, _ = app_android(Path(args.apk), args.cls, args.base_url, Path(args.workdir))
+    classes, src, _ = app_android(
+        Path(args.apk) if args.apk else None,
+        args.cls,
+        args.base_url,
+        Path(args.workdir),
+        args.jadx_jar,
+        Path(args.source) if args.source else None,
+    )
     if src is None:
         print("\n".join(classes) or "(no candidate classes found)")
         print(f"next: mcpsmith app-android {args.apk} --class NAME --base-url URL{_flags(args)}")
@@ -347,10 +373,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = command(
         "app-android",
         cmd_app_android,
-        "read an Android app's HTTP interface (via REA) into unverified endpoints; your own or an authorized app",
+        "read an Android app's HTTP interface (via REA's JADX jar) into unverified endpoints; your own or an authorized app",
     )
-    sp.add_argument("apk", help="path of the APK (never downloaded for you)")
+    sp.add_argument("apk", nargs="?", help="path of the APK (never downloaded for you)")
     sp.add_argument("--class", dest="cls", help="decompiled Retrofit interface class; omit to list candidates")
+    sp.add_argument("--source", help="a class already decompiled by any tool (.java file); skips the jar")
+    sp.add_argument("--jadx-jar", help="REA's JADX MCP jar (default: $REA_JADX_MCP_JAR, set by `npx rea-agents setup`)")
     sp.add_argument("--base-url", default="", help="the app's API base URL, e.g. https://api.example.com")
 
     sp = command("secret", cmd_secret, "store a connection's credentials in the OS keychain", workdir=False)

@@ -81,22 +81,34 @@ async def smith_inspect(
 
 @tool("Read an Android app's API", read_only=False)
 async def smith_app_android(
-    apk: Annotated[str, Field(description="Absolute path of the APK on this machine.")],
+    apk: Annotated[str | None, Field(description="Absolute path of the APK on this machine.")] = None,
     class_name: Annotated[
         str | None, Field(description="Decompiled Retrofit interface class; omit to list candidate classes.")
     ] = None,
     base_url: Annotated[str, Field(description="The app's API base URL, e.g. https://api.example.com.")] = "",
     workdir: Annotated[str, Field(description="Absolute directory for source.json and digest.md.")] = DEFAULT_WORKDIR,
+    source_file: Annotated[
+        str | None, Field(description="Absolute path of a .java class already decompiled by any tool; skips the jar.")
+    ] = None,
+    jadx_jar: Annotated[str | None, Field(description="REA's JADX MCP jar; default $REA_JADX_MCP_JAR.")] = None,
 ) -> dict:
-    """Read the HTTP interface an Android app declares (through REA) into source.json, for the user's own or an authorized app.
+    """Read the HTTP interface an Android app declares (through REA's JADX jar) into source.json, for the user's own or an authorized app.
 
-    Runs the REA decompiler on the APK. Without class_name it lists candidate classes. The endpoints are unverified
-    until smith_probe calls them. Next: smith_probe, then smith_draft.
+    Runs the JADX decompiler from REA on the APK. Without class_name it lists candidate classes. The endpoints are
+    unverified until smith_probe calls them. Next: smith_probe, then smith_draft.
     """
     from .cli import app_android
 
     wd = _paths(workdir)
-    classes, src, text = await asyncio.to_thread(app_android, _paths(apk), class_name, base_url, wd)
+    classes, src, text = await asyncio.to_thread(
+        app_android,
+        _paths(apk) if apk else None,
+        class_name,
+        base_url,
+        wd,
+        jadx_jar,
+        _paths(source_file) if source_file else None,
+    )
     if src is None:
         return {"candidates": classes}
     return {

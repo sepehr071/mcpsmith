@@ -180,7 +180,7 @@ class Endpoint(BaseModel):
 
 
 class Source(BaseModel):
-    kind: Literal["openapi", "har"]
+    kind: Literal["openapi", "har", "app"]
     title: str
     description: str = ""
     base_url: str
