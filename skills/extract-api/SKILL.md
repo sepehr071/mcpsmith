@@ -73,6 +73,14 @@ For a desktop program's API, the developer records the program's own traffic wit
 2. Call `smith_app_desktop(har=<file>, hosts=[<the program's API host>], workdir=<dir>)`. Other programs' traffic on the same proxy is dropped by `hosts`. If it says nothing to import, the capture holds no JSON API calls: ask the user to record again.
 3. Continue at step 4 (`smith_draft`). The endpoints came from real responses, so they are verified. Delete the HAR afterwards (step 6).
 
+## Android app (own or authorized)
+
+Only for an app the user owns or is authorized to analyze; nothing is run or bypassed. Call `smith_app_android(apk=<abs path>, base_url=<API base URL>, workdir=<dir>)` (needs REA's JADX jar; `REA_JADX_MCP_JAR`). Without `class_name` it lists candidate Retrofit classes: pick one and call again. Endpoints are read from code, so they are unverified until `smith_probe(workdir)` calls the GET ones with the user's credentials (`writes=true` only after the user confirms). A method or parameter kind that could not be read is listed in `source.json` `description`: an endpoint with no method fails `smith_validate` until you set it in the plan. Then continue at step 4.
+
+## Electron / JavaScript app (own or authorized)
+
+Same rules. Call `smith_app_js(path=<app dir, app.asar or one file>, base_url=<API base URL>, workdir=<dir>)`. Calls whose path is built at run time are skipped and noted, never guessed. Endpoints are unverified until `smith_probe(workdir)`; set `base_url` first or probe refuses. Then continue at step 4.
+
 ## 6. Privacy and publishing
 
 - Tool results go to the model like any conversation text. Tell the user which personal fields the tools return and trim `fields` they do not need.

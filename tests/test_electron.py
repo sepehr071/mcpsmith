@@ -341,3 +341,12 @@ def test_mcp_tool(tmp_path):
     out = asyncio.run(server.smith_app_js(str(FIXTURES), "https://api.demo.test", str(tmp_path / "wd")))
     assert out["endpoints"] == out["unverified"] > 0 and "UNVERIFIED" in out["digest"]
     assert (tmp_path / "wd" / "source.json").exists()
+
+
+def test_electron_notes_hide_secrets_and_are_capped():
+    from mcpsmith.design import digest
+
+    code = "fetch(BASE + 'x?api_key=sk_live_123');" + "".join(f"fetch(u{i});" for i in range(300))
+    s = electron.parse_sources({"a.js": code})
+    assert "sk_live_123" not in s.model_dump_json() and "sk_live_123" not in digest(s)
+    assert len(s.description.splitlines()) == 201

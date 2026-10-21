@@ -189,6 +189,11 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
         if ep is None:
             err(f"{w}.endpoint", f"unknown endpoint {tool.endpoint!r}; use an endpoint id from the digest.")
             continue
+        if not ep.method:
+            err(
+                f"{w}.endpoint",
+                f"endpoint {ep.id!r} has no HTTP method (not readable from the app); set the method in the plan.",
+            )
         for p in PATH_PARAM.findall(ep.path):
             if f"path.{p}" not in targets:
                 err(w, f"path parameter {{{p}}} has no value; add an arg with to='path.{p}' or a fixed value.")

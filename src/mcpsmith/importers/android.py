@@ -12,7 +12,7 @@ import re
 from collections import Counter
 from urllib.parse import urlsplit
 
-from mcpsmith.importers.har import _is_credential, _scrub
+from mcpsmith.importers.har import _is_credential, _scrub, cap_notes, note_text
 from mcpsmith.model import AuthScheme, Endpoint, Param, Source
 
 VERBS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
@@ -50,7 +50,7 @@ def parse_interface(
         try:
             parsed = _statement(stmt)
         except _Skip as e:
-            notes.append(f"skipped {' '.join(stmt.split())[:60]!r}: {e}")
+            notes.append(f"skipped {note_text(stmt)!r}: {e}")
             continue
         if parsed is None:
             continue
@@ -62,7 +62,7 @@ def parse_interface(
             continue
         if ep is not None:
             found.append(ep)
-            if ep.method == "":
+            if ep.method == "" or "minified annotation" in ep.description:
                 notes.append(f"{name}: {ep.description}")
     if not found and not notes:
         notes.append("no Retrofit-annotated methods found; is this class an HTTP interface?")
@@ -78,7 +78,7 @@ def parse_interface(
     return Source(
         kind="app",
         title=title or (iface.group(1) if iface else "Android app"),
-        description="\n".join(notes),
+        description="\n".join(cap_notes(notes)),
         base_url=strip_userinfo(base_url),
         auth=list(schemes.values()),
         endpoints=found,
@@ -302,7 +302,7 @@ def _endpoint(
     note = "; ".join(unresolved)
     return Endpoint(
         id="",
-        method="" if unresolved else (method or ""),
+        method=method or "",  # "" only when the request line itself was unresolved
         path=path,
         base_url=base,
         summary=name,
@@ -316,7 +316,7 @@ def _endpoint(
 
 def _path(expr: str) -> str:
     if (p := _literal(expr)) is None:
-        raise _Skip(f"path is built at run time ({expr.strip()[:60]})")
+        raise _Skip(f"path is built at run time ({note_text(expr)})")
     return p
 
 
@@ -367,8 +367,8 @@ def _param(an, label, var, jtype, placeholders, unresolved) -> Param | None:
     if label is not None:
         if label in placeholders:
             return Param(name=label, location="path", type=t, required=True)
-        unresolved.append(f"parameter {label!r} has minified annotation @{an}; query assumed")
-        return Param(name=label, location="query", type=t, required=primitive, description="kind unresolved")
+        unresolved.append(f"parameter {label!r} has minified annotation @{an}; kind unknown, left out of the request")
+        return None
     if t == "string" and jtype not in {"String", "CharSequence"}:  # only @Body takes an arbitrary object
         return Param(name=var, location="body", type="object", required=True)
     unresolved.append(f"parameter {var!r} has minified annotation @{an} with no name; kind unknown")

@@ -305,3 +305,20 @@ def test_live_real_apk():
     assert len(src.endpoints) >= 110
     assert all(e.method for e in src.endpoints)
     assert any(e.method != "GET" for e in src.endpoints)
+
+
+def test_unresolved_parameter_keeps_the_method_and_stays_out_of_the_request():
+    s = android.parse_interface('interface A { @GET("api/items") Call<X> list(@zz("limit") int limit); }')
+    e = s.endpoints[0]
+    assert e.method == "GET" and not e.params and "limit" in s.description
+
+
+def test_notes_never_carry_source_secrets_and_are_capped():
+    from mcpsmith.design import digest
+
+    java = 'interface A { @GET(BASE + "/x?api_key=sk_live_123") Call<X> a(); }'
+    s = android.parse_interface(
+        java + "interface B { " + "".join(f"@GET(P{i}) Call<X> m{i}();" for i in range(300)) + "}"
+    )
+    assert "sk_live_123" not in s.model_dump_json() and "sk_live_123" not in digest(s)
+    assert len(s.description.splitlines()) == 201 and "more" in s.description.splitlines()[-1]

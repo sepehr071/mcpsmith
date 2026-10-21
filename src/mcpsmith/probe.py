@@ -62,8 +62,10 @@ def _api(source: Source, hosts: list[str], env: dict[str, str] | None) -> Api:
     return api
 
 
-def _target(e: Endpoint) -> tuple[str, dict, dict] | str:
+def _target(e: Endpoint, source: Source) -> tuple[str, dict, dict] | str:
     """(url, path values, query) for the request, or the reason it cannot be sent."""
+    if not (e.base_url or source.base_url):
+        return "no base URL; set base_url in the plan / source.json or pass --base-url"
     path = {p.name: p.example for p in e.params if p.location == "path" and p.example is not None}
     missing = [n for n in re.findall(r"\{([^{}]+)\}", e.path) if n not in path]
     if missing:
@@ -91,10 +93,13 @@ async def _run(source: Source, writes: bool, limit: int, env: dict[str, str] | N
         r = ProbeResult(e.id)
         results.append(r)
         method = e.method.upper()
+        if not method:
+            r.skipped_reason = "HTTP method not read from the app; set it in source.json"
+            continue
         if method != "GET" and not writes:
             r.skipped_reason = f"{method} may write; pass writes=true to probe it"
             continue
-        if isinstance(t := _target(e), str):
+        if isinstance(t := _target(e, source), str):
             r.skipped_reason = t
             continue
         url, path, query = t
@@ -117,6 +122,9 @@ async def _run(source: Source, writes: bool, limit: int, env: dict[str, str] | N
                 stopped[host] = f"answered {err.status} (rate limit or blocked)"
             elif err.expired:
                 stopped[host] = "session has expired"
+            continue
+        except Exception as err:  # one endpoint's surprise must not discard the others' results
+            r.error = f"{type(err).__name__}: {err}"
             continue
         e.response_example = _trim(_scrub(data))  # scrub before trimming so no half-cut email survives
         e.verified = True

@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from mcpsmith.importers.android import strip_userinfo
-from mcpsmith.importers.har import _is_credential, _scrub
+from mcpsmith.importers.har import _is_credential, _scrub, cap_notes, note_text
 from mcpsmith.model import AuthScheme, Endpoint, Param, Source
 
 EXTS = {".js", ".mjs", ".cjs", ".ts"}
@@ -231,7 +231,7 @@ def parse_sources(files: dict[str, str], base_url: str = "", title: str = "", ma
     return Source(
         kind="app",
         title=title or "JavaScript app",
-        description="\n".join(notes),
+        description="\n".join(cap_notes(notes)),
         base_url=base_url,
         auth=list(schemes.values()),
         endpoints=found,
@@ -303,7 +303,7 @@ def _call_args(s: str) -> list[str]:
 
 
 def _clean(s: str) -> str:
-    return _scrub(re.sub(r"//[^/\s@'\"`]*@", "//", s))
+    return note_text(re.sub(r"//[^/\s@'\"`]*@", "//", s))
 
 
 def _endpoint(
