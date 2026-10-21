@@ -79,6 +79,34 @@ async def smith_inspect(
     return {"workdir": str(wd), "endpoints": len(src.endpoints), "digest": text}
 
 
+@tool("Read an Android app's API", read_only=False)
+async def smith_app_android(
+    apk: Annotated[str, Field(description="Absolute path of the APK on this machine.")],
+    class_name: Annotated[
+        str | None, Field(description="Decompiled Retrofit interface class; omit to list candidate classes.")
+    ] = None,
+    base_url: Annotated[str, Field(description="The app's API base URL, e.g. https://api.example.com.")] = "",
+    workdir: Annotated[str, Field(description="Absolute directory for source.json and digest.md.")] = DEFAULT_WORKDIR,
+) -> dict:
+    """Read the HTTP interface an Android app declares (through REA) into source.json, for the user's own or an authorized app.
+
+    Runs the REA decompiler on the APK. Without class_name it lists candidate classes. The endpoints are unverified
+    until smith_probe calls them. Next: smith_probe, then smith_draft.
+    """
+    from .cli import app_android
+
+    wd = _paths(workdir)
+    classes, src, text = await asyncio.to_thread(app_android, _paths(apk), class_name, base_url, wd)
+    if src is None:
+        return {"candidates": classes}
+    return {
+        "workdir": str(wd),
+        "endpoints": len(src.endpoints),
+        "unverified": sum(not e.verified for e in src.endpoints),
+        "digest": text,
+    }
+
+
 @tool("Draft a tool plan", read_only=False)
 async def smith_draft(
     workdir: Annotated[str, Field(description="Absolute workdir that smith_inspect wrote source.json into.")],

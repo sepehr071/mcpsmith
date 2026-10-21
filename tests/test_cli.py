@@ -127,6 +127,7 @@ async def test_server_tools(client, spec, tmp_path):
     assert set(tools) == {
         "smith_guide",
         "smith_probe",
+        "smith_app_android",
         "smith_inspect",
         "smith_draft",
         "smith_validate",

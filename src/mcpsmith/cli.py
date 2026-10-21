@@ -34,6 +34,25 @@ def inspect_source(source: str, workdir: Path, hosts: list[str] | None, budget: 
     return src, source_path, digest_path, text
 
 
+def app_android(
+    apk: Path, class_name: str | None, base_url: str, workdir: Path
+) -> tuple[list[str], Source | None, str]:
+    """Without a class: candidate API classes. With one: write source.json + digest.md. Returns (candidates, source, digest)."""
+    from .design import digest
+    from .importers import android
+
+    if not class_name:
+        return android.find_api_classes(apk), None, ""
+    src = android.parse_interface(android.rea_class_source(apk, class_name), base_url)
+    if not src.endpoints:
+        raise ValueError(f"no endpoints in {class_name}: {src.description}")
+    workdir.mkdir(parents=True, exist_ok=True)
+    save_source(src, workdir / "source.json")
+    text = digest(src)
+    (workdir / "digest.md").write_text(text, encoding="utf-8", newline="\n")
+    return [], src, text
+
+
 def load_workdir_source(workdir: Path) -> Source | None:
     path = workdir / "source.json"
     return load_source(path) if path.exists() else None
@@ -178,6 +197,19 @@ def cmd_probe(args) -> int:
     return 1 if tried and not any(r.ok for r in tried) else 0
 
 
+def cmd_app_android(args) -> int:
+    classes, src, _ = app_android(Path(args.apk), args.cls, args.base_url, Path(args.workdir))
+    if src is None:
+        print("\n".join(classes) or "(no candidate classes found)")
+        print(f"next: mcpsmith app-android {args.apk} --class NAME --base-url URL{_flags(args)}")
+        return 0
+    print(f"{src.title}: {len(src.endpoints)} endpoints, all unverified")
+    if src.description:
+        print(src.description)
+    print(f"wrote {Path(args.workdir) / 'source.json'}\nnext: mcpsmith probe{_flags(args)}")
+    return 0
+
+
 def cmd_guide(args) -> int:
     from .design import guide
 
@@ -311,6 +343,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--limit", type=int, default=20, help="most endpoints to probe (default 20)")
     sp.add_argument("--writes", action="store_true", help="also probe non-GET endpoints (may change data)")
+
+    sp = command(
+        "app-android",
+        cmd_app_android,
+        "read an Android app's HTTP interface (via REA) into unverified endpoints; your own or an authorized app",
+    )
+    sp.add_argument("apk", help="path of the APK (never downloaded for you)")
+    sp.add_argument("--class", dest="cls", help="decompiled Retrofit interface class; omit to list candidates")
+    sp.add_argument("--base-url", default="", help="the app's API base URL, e.g. https://api.example.com")
 
     sp = command("secret", cmd_secret, "store a connection's credentials in the OS keychain", workdir=False)
     sp.add_argument("action", choices=["set", "list", "delete"])

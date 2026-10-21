@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import yaml
 
-from mcpsmith.importers import har, openapi, rea
+from mcpsmith.importers import android, har, openapi, rea  # noqa: F401  (android is not auto-detected: see app-android)
 from mcpsmith.model import Source
 from mcpsmith.runtime.http import tls_context
 
