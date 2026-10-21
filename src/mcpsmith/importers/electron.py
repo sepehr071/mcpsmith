@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import bisect
 import json
+import os
 import re
 import struct
 from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from mcpsmith.importers.android import strip_userinfo
 from mcpsmith.importers.har import _is_credential, _scrub
 from mcpsmith.model import AuthScheme, Endpoint, Param, Source
 
@@ -33,7 +35,7 @@ HEADER_PAIR = re.compile(r"""(?:(['"])([\w-]+)\1|([\w-]+))\s*:\s*(['"])((?:\\.|(
 
 # shortcut: a comment is only recognised after whitespace, so "http://" and "**/*.js" in strings survive; a comment
 # glued to code (`x;//c`) stays visible. Strings are not tracked: a regex literal's quote would desync the scan.
-COMMENT = re.compile(r"(?<!\S)(?://[^\n]*|/\*.*?\*/)", re.S)
+COMMENT_START = re.compile(r"(?<!\S)/[/*]")
 ASSIGN_WINDOW = 3000  # how far above a call a variable's assignment is looked for
 
 
@@ -50,6 +52,7 @@ def read_app(
     max_files: int = 400,
     max_bytes: int = 8_000_000,
     max_map_bytes: int = 64_000_000,
+    max_total: int = 256_000_000,
 ) -> dict[str, str]:
     """{logical file name: text} of an app's JavaScript/TypeScript from a directory, an .asar or one file.
 
@@ -60,21 +63,18 @@ def read_app(
     skipped: list[tuple[str, int]] = []
     path = Path(path)
     if path.is_dir():
-        found = sorted(
-            (p.relative_to(path).as_posix(), p)
-            for p in path.rglob("*")
-            if p.is_file() and p.suffix in EXTS | {".map"} and "node_modules" not in p.relative_to(path).parts
-        )
-        cands = [(n, p.stat().st_size, p.read_bytes) for n, p in found]
-        raw = _cap(cands, notes, skipped, max_files, max_bytes, max_map_bytes)
+        found = []
+        for root, dirs, names in os.walk(path):  # node_modules is pruned here, never walked
+            dirs[:] = [d for d in dirs if d != "node_modules"]
+            found += [Path(root, n) for n in names if Path(n).suffix in EXTS | {".map"}]
+        entries = [(p.relative_to(path).as_posix(), p.stat().st_size, p.read_bytes) for p in sorted(found)]
     elif path.suffix == ".asar":
-        raw = _cap(_asar_entries(path), notes, skipped, max_files, max_bytes, max_map_bytes)
+        entries = _asar_entries(path)
     elif path.is_file():
-        raw = _cap(
-            [(path.name, path.stat().st_size, path.read_bytes)], notes, skipped, max_files, max_bytes, max_map_bytes
-        )
+        entries = [(path.name, path.stat().st_size, path.read_bytes)]
     else:
         raise ValueError(f"{path}: no such file or directory")
+    raw = _cap(entries, notes, skipped, max_files, max_bytes, max_map_bytes, max_total)
     texts = {n: b.decode("utf-8-sig", errors="replace") for n, b in raw.items() if not n.endswith(".map")}
     out: dict[str, str] = {}
     covered: set[str] = set()
@@ -100,17 +100,27 @@ def read_app(
 
 
 def _cap(
-    cands, notes: list[str], skipped: list[tuple[str, int]], max_files: int, max_bytes: int, max_map_bytes: int
+    cands,
+    notes: list[str],
+    skipped: list[tuple[str, int]],
+    max_files: int,
+    max_bytes: int,
+    max_map_bytes: int,
+    max_total: int,
 ) -> dict[str, bytes]:
     """Read what fits: `.map` files are JSON whose sourcesContent is the payload, so they get their own larger cap."""
     if len(cands) > max_files:
         notes.append(f"dropped {len(cands) - max_files} files beyond the {max_files}-file cap")
-    out = {}
+    out, used, over = {}, 0, 0
     for name, size, read in cands[:max_files]:
         if size > (max_map_bytes if name.endswith(".map") else max_bytes):
             skipped.append((name, size))
+        elif used + size > max_total:
+            over += 1
         else:
-            out[name] = read()
+            out[name], used = read(), used + size
+    if over:
+        notes.append(f"dropped {over} files beyond the {max_total}-byte total read budget")
     return out
 
 
@@ -163,7 +173,7 @@ def _asar_entries(path: Path):
                     suffix = "." + full.rpartition(".")[2]
                     if (suffix in EXTS or suffix == ".map") and "node_modules" not in full.split("/"):
                         entries.append((full, offset, size))
-    except (ValueError, KeyError, TypeError, AttributeError, struct.error, OSError) as e:
+    except (ValueError, KeyError, TypeError, AttributeError, struct.error, OSError, RecursionError) as e:
         raise ValueError(f"{path}: malformed .asar ({e})") from e
 
     def reader(offset: int, size: int):
@@ -185,11 +195,17 @@ def parse_sources(files: dict[str, str], base_url: str = "", title: str = "", ma
     notes: list[str] = []
     schemes: dict[str, AuthScheme] = {}
     found: list[Endpoint] = []
-    dropped = 0
+    base_url = strip_userinfo(base_url)
+    capped = False
     for fname, text in files.items():
-        text = COMMENT.sub(_blank, text)  # a comment saying "fetch (like..." is not a call
+        if capped:
+            break
+        text = _blank_comments(text)  # a comment saying "fetch (like..." is not a call
         newlines = [m.start() for m in re.finditer("\n", text)]
         for pos, end, method, kind in sorted(_sites(text)):
+            if len(found) >= max_endpoints:
+                capped = True
+                break
             where = f"{fname}:{bisect.bisect(newlines, pos) + 1}"
             try:
                 args = _call_args(text[end : end + WINDOW])
@@ -199,12 +215,9 @@ def parse_sources(files: dict[str, str], base_url: str = "", title: str = "", ma
                 continue
             if ep.method == "":
                 notes.append(f"{where}: HTTP method not readable for {ep.path}")
-            if len(found) < max_endpoints:
-                found.append(ep)
-            else:
-                dropped += 1
-    if dropped:
-        notes.append(f"dropped {dropped} endpoints beyond the {max_endpoints}-endpoint cap")
+            found.append(ep)
+    if capped:
+        notes.append(f"stopped at the {max_endpoints}-endpoint cap; later calls and files were not read")
     if not found and not notes:
         notes.append("no request calls found; does this app use request(method, path), fetch or axios?")
     keys = [f"{e.method} {e.path}" for e in found]
@@ -303,13 +316,18 @@ def _endpoint(
             method = "GET"  # fetch's own default
         elif opts.startswith("{") and (m := METHOD_KEY.search(opts)):
             method = m.group(2).upper()
-        elif opts.startswith("{") and "..." not in opts:
-            method = "GET"
+        elif opts.startswith("{") and "..." not in opts and not re.search(r"\bmethod\s*[:,}]", opts):
+            method = "GET"  # no method key at all; a `method: m` or `{method}` is not a literal, so it stays unread
         else:
             method = ""
         if method not in VERBS.split("|"):
             method = ""
-    path = _path(_assigned(args[0], before) if args else "")
+    literal, above = _assigned(args[0], before) if args else ("", 0)
+    path = _path(literal)
+    resolved = ""
+    if args and literal != args[0]:
+        file, _, line = where.rpartition(":")
+        resolved = f"path resolved from {file}:{int(line) - above}"
     base = ""
     if path.startswith(("http://", "https://")):
         u = urlsplit(path)
@@ -358,6 +376,7 @@ def _endpoint(
         path=path,
         base_url=base,
         summary=where,
+        description=resolved,
         params=params,
         auth=list(dict.fromkeys(auth)),
         count=0,
@@ -365,30 +384,61 @@ def _endpoint(
     )
 
 
-def _blank(m: re.Match) -> str:
-    """A comment as spaces, newlines kept so offsets and line numbers hold."""
-    return re.sub(r"[^\n]", " ", m.group(0))
+def _blank_comments(text: str) -> str:
+    """`text` with comments as spaces (newlines kept, so offsets and line numbers hold). One linear pass; an
+    unterminated `/*` runs to the end of the file."""
+    out, i = [], 0
+    while m := COMMENT_START.search(text, i):
+        if m.group(0).endswith("/"):
+            end = text.find("\n", m.end())
+        else:
+            end = text.find("*/", m.end())
+            end = end + 2 if end != -1 else -1
+        end = len(text) if end == -1 else end
+        out += [text[i : m.start()], re.sub(r"[^\n]", " ", text[m.start() : end])]
+        i = end
+    return "".join(out) + text[i:]
 
 
-def _assigned(arg: str, before: str) -> str:
-    """The literal a bare identifier was set to by its one `const|let|var` above the call, else `arg` unchanged.
+def _assigned(arg: str, before: str) -> tuple[str, int]:
+    """(literal, lines above the call) of the one `const|let|var` a bare identifier was set to, else (`arg`, 0).
 
-    shortcut: one level, a fixed window, no scope analysis; a second assignment in the window leaves it unresolved.
+    Refused, leaving the skip note: a second or compound assignment, destructuring, a function or `}` between the
+    assignment and the call (another scope), or a parameter of that name in between.
+    shortcut: one level, a fixed window, no real scope analysis.
     """
     if not re.fullmatch(r"[A-Za-z_$][\w$]*", arg):
-        return arg
-    sets = list(re.finditer(rf"(?<![\w$.]){re.escape(arg)}\s*=(?![=>])", before))
+        return arg, 0
+    n = re.escape(arg)
+    sets = list(re.finditer(rf"(?<![\w$.]){n}\s*=(?![=>])", before))
     if len(sets) != 1 or not re.search(r"\b(?:const|let|var)\s+$", before[: sets[0].start()]):
-        return arg
-    rest = before[sets[0].end() :].lstrip()
+        return arg, 0
+    if re.search(
+        rf"(?<![\w$.]){n}\s*(?:\+\+|--|(?:\*\*|>>>|<<|>>|&&|\|\||\?\?|[-+*/%&|^])=)|(?:\+\+|--)\s*{n}\b", before
+    ):
+        return arg, 0
+    if re.search(rf"[\[{{][^\]}}=;()]*(?<![\w$.]){n}\b[^\]}}=;()]*[\]}}]\s*=(?!=)", before):
+        return arg, 0  # destructuring
+    between = before[sets[0].end() :]
+    depth = 0
+    for c in between:
+        depth += (c == "{") - (c == "}")
+        if depth < 0:
+            return arg, 0
+    if re.search(r"\bfunction\b|=>", between):
+        return arg, 0
+    for sig in re.finditer(r"\(([^()]*)\)\s*(?::[^{;=]*)?\{", between):
+        if any(re.sub(r"^\.\.\.|[:=].*$", "", p, flags=re.S).strip() == arg for p in sig.group(1).split(",")):
+            return arg, 0
+    rest = between.lstrip()
     try:
         if rest[:1] in ("'", '"', "`"):
             end = _skip_string(rest, 0)
             if rest[end:].lstrip()[:1] not in tuple("+-*/%.?([&|<>=!:"):
-                return rest[:end]
+                return rest[:end], between.count("\n")
     except _Skip:
         pass
-    return arg
+    return arg, 0
 
 
 def _path(arg: str) -> str:

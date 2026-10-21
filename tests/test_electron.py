@@ -2,12 +2,13 @@ import asyncio
 import json
 import re
 import struct
+import time
 from pathlib import Path
 
 import pytest
 
 from mcpsmith.cli import main
-from mcpsmith.importers import electron
+from mcpsmith.importers import android, electron
 
 FIXTURES = Path(__file__).parent / "fixtures" / "electron"
 
@@ -21,7 +22,10 @@ def make_asar(path: Path, files: dict[str, str]) -> Path:
             node = node.setdefault(d, {"files": {}})["files"]
         node[leaf] = {"size": len(raw), "offset": str(len(data))}
         data += raw
-    body = json.dumps({"files": index}).encode()
+    return write_asar(path, json.dumps({"files": index}).encode(), data)
+
+
+def write_asar(path: Path, body: bytes, data: bytes = b"") -> Path:
     padded = body + b"\0" * (-len(body) % 4)
     header = struct.pack("<II", len(padded) + 4, len(body)) + padded
     path.write_bytes(struct.pack("<II", 4, len(header)) + header + data)
@@ -136,7 +140,15 @@ def test_malformed_asar_names_the_file(tmp_path):
         bad.write_bytes(blob)
         with pytest.raises(ValueError, match=name):
             electron.read_app(bad)
-    assert not (tmp_path / "wd").exists()
+        wd = tmp_path / "wd"
+        assert main(["app-js", str(bad), "-w", str(wd)]) == 2
+        assert not wd.exists()  # nothing written
+
+
+def test_deeply_nested_asar_index_is_a_clear_error(tmp_path):
+    deep = write_asar(tmp_path / "deep.asar", b'{"files":{"a":' * 5000 + b"{}" + b"}}" * 5000)
+    with pytest.raises(ValueError, match="deep.asar"):
+        electron.read_app(deep)
 
 
 def test_caps_are_reported(tmp_path):
@@ -147,7 +159,13 @@ def test_caps_are_reported(tmp_path):
     files = electron.read_app(tmp_path, notes, max_files=3, max_bytes=50)
     assert len(files) == 2 and "big.js" not in files and len(notes) == 2
     many = {f"f{i}.js": f"axios.get('/a{i}')" for i in range(5)}
-    assert "dropped 3" in electron.parse_sources(many, max_endpoints=2).description
+    capped = electron.parse_sources(many, max_endpoints=2)
+    assert len(capped.endpoints) == 2 and "stopped at the 2-endpoint cap" in capped.description
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "dep.js").write_text("axios.get('/dep')", encoding="utf-8")
+    notes = []
+    files = electron.read_app(tmp_path, notes, max_bytes=10_000, max_total=40)
+    assert "node_modules/dep.js" not in files and len(files) == 2 and any("total read budget" in n for n in notes)
 
 
 def test_path_held_in_a_variable_is_resolved_once():
@@ -177,6 +195,56 @@ function e(param) {
     assert pairs(s) == {("GET", "/orgs/{org}/repos")}
     for name in ("twice", "tern", "plus", "param"):
         assert f"({name})" in s.description
+
+
+def test_a_parameter_or_another_scope_never_binds_an_assignment():
+    code = """
+function a() { const path = '/admin/secret' }
+function b(path) { return request('GET', path) }
+function c() {
+  let p = '/a'
+  if (x) p += '/b'
+  return request('GET', p)
+}
+const q = '/shadowed'
+class K { m(q) { return request('GET', q) } }
+const r = '/cb'
+items.map(x => request('GET', r))
+const [s] = [1]
+let t = '/t'
+;[t] = other
+request('GET', t)
+"""
+    s = electron.parse_sources({"s.js": code})
+    assert s.endpoints == [] and "/admin/secret" not in s.description
+    for name in ("path", "p", "q", "r", "t"):
+        assert f"({name})" in s.description
+
+
+def test_resolved_path_is_noted_with_its_line():
+    s = electron.parse_sources({"r.js": "const u = '/v1/x'\n\nrequest('GET', u)\n"})
+    assert [(e.path, e.description) for e in s.endpoints] == [("/v1/x", "path resolved from r.js:1")]
+
+
+def test_fetch_with_a_non_literal_method_is_unreadable():
+    s = electron.parse_sources(
+        {"f.js": "fetch(u, { method: m, body })\nfetch('/k', { method })\nfetch('/ok', { body })"}
+    )
+    assert {(e.path, e.method) for e in s.endpoints} == {("/k", ""), ("/ok", "GET")}
+    assert "{u}" not in {e.path for e in s.endpoints}
+
+
+def test_comment_stripping_is_linear():
+    start = time.perf_counter()
+    for text, expected in ((" /*" * 200_000, 0), (" //" * 200_000, 1), ("/* " + "*" * 400_000, 0)):
+        # an unterminated block comment runs to the end of the file; a line comment ends at its newline
+        assert len(electron.parse_sources({"p.js": text + "\naxios.get('/x')"}).endpoints) == expected
+    assert time.perf_counter() - start < 3
+
+
+def test_base_url_userinfo_is_stripped():
+    assert electron.parse_sources({}, "https://u:p@api.demo.test/v1").base_url == "https://api.demo.test/v1"
+    assert android.parse_interface("class X {}", "https://u:p@api.demo.test").base_url == "https://api.demo.test"
 
 
 def test_comments_and_apostrophes_are_not_calls():

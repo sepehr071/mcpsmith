@@ -29,6 +29,11 @@ PARAM_NAMES = {"Path", "Query", "QueryMap", "QueryName", "Field", "FieldMap", "B
 NOT_APP_TYPE = ("java.", "javax.", "android.", "kotlin.", "okhttp3.")
 
 
+def strip_userinfo(url: str) -> str:
+    """`url` without a `user:pass@` before the host."""
+    return re.sub(r"^([a-zA-Z][\w+.-]*://)[^/@?#]*@", r"\1", url)
+
+
 def parse_interface(
     java: str, base_url: str = "", title: str = "", annotations: dict[str, str] | None = None
 ) -> Source:
@@ -74,7 +79,7 @@ def parse_interface(
         kind="app",
         title=title or (iface.group(1) if iface else "Android app"),
         description="\n".join(notes),
-        base_url=base_url,
+        base_url=strip_userinfo(base_url),
         auth=list(schemes.values()),
         endpoints=found,
     )
