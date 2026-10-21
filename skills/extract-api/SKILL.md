@@ -49,7 +49,7 @@ Read the digest and the guide fully, then edit `<workdir>/plan.yaml` yourself (s
 - Keep only tools for the goals from step 1; drop analytics, menus, config, auth plumbing.
 - Rename cryptic fields and args to what a person says (`emp_id` to `employee_id`, `Item_dev_sort_date` through `map: {newest: ...}`).
 - Add `transform` on args and `output.transforms` for dates, unix times, minutes, currency. Set `timezone` (IANA name; empty means the machine's local zone).
-- Set `auth: {type: browser, login_path: /Account/Login}`; `login_path` is the path the site redirects to when logged out.
+- Set `auth: {type: browser, login_path: /Account/Login}`; `login_path` is the path the site redirects to when logged out. Also set `session_cookie` to the login cookie's name: compare the cookie NAMES Chrome holds logged in vs logged out (`mcpsmith.browser.cookies_for`, names only, never print values). Some sites answer an ended session with HTTP 200 and an empty body.
 - Fill `example` for every tool with values seen in the recording; `read_only: false` for anything that writes.
 
 ```

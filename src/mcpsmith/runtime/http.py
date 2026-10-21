@@ -91,6 +91,7 @@ class Api:
         secret: Callable[[str], str | None] | None = None,
         cookie_provider: Callable[[str], Awaitable[dict[str, str]]] | None = None,
         login_path: str = "",
+        session_cookie: str = "",
         proxy: str | None = None,
     ):
         if auth and (auth.get("type") not in AUTH_TYPES or not (auth.get("env") or auth.get("type") == "browser")):
@@ -108,6 +109,7 @@ class Api:
         self.secret = secret
         self.cookie_provider = cookie_provider
         self.login_path = login_path
+        self.session_cookie = session_cookie
         self.proxy = proxy
         self._transport: httpx.AsyncBaseTransport | None = None
         self._client: httpx.AsyncClient | None = None
@@ -149,11 +151,14 @@ class Api:
             sent = self._add_auth(query, headers, cookies)
             if self.auth and self.auth["type"] == "browser" and self.cookie_provider:
                 try:
-                    cookies.update(await self.cookie_provider(host))
+                    jar = await self.cookie_provider(host)
                 except (OSError, httpx.HTTPError, RuntimeError):
                     raise ApiError(
                         "The mcpsmith Chrome is not running. Start it with `mcpsmith browser`, log in, then retry."
                     ) from None
+                if self.session_cookie and self.session_cookie not in jar:
+                    raise ApiError(self._expired_message(host))
+                cookies.update(jar)
                 sent = True
         if any(re.search(r"[;\r\n]", str(v)) for v in cookies.values()) or any(
             re.search(r"[\r\n]", str(v)) for v in headers.values()
@@ -186,9 +191,7 @@ class Api:
             break
 
         if self.auth and self.auth["type"] == "browser" and sent and self._expired(r):
-            raise ApiError(
-                f"{host} says the session has expired. Log in again in the mcpsmith Chrome window, then retry."
-            )
+            raise ApiError(self._expired_message(host))
         if r.status_code >= 300:
             raise ApiError(self._status_message(r, content, host, sent), r.status_code)
         if not content:
@@ -203,6 +206,10 @@ class Api:
                 self._cache.pop(next(iter(self._cache)))
             self._cache[key] = (time.monotonic(), copy.deepcopy(data))
         return data
+
+    @staticmethod
+    def _expired_message(host: str) -> str:
+        return f"{host} says the session has expired. Log in again in the mcpsmith Chrome window, then retry."
 
     def _expired(self, r: httpx.Response) -> bool:
         """A 401, or a redirect to the site's login page."""

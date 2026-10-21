@@ -309,6 +309,27 @@ async def test_browser_auth_session_expired(status, loc):
     assert "TOPSECRET" not in str(e.value)
 
 
+@pytest.mark.parametrize("jar,sent", [({"tok": "CSRF-SECRET"}, 0), ({"tok": "CSRF-SECRET", "login": "x"}, 1)])
+async def test_browser_auth_session_cookie(jar, sent):
+    seen = []
+
+    async def provider(host):
+        return jar
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    api = make_api(handler, auth={"type": "browser"}, cookie_provider=provider, session_cookie="login")
+    if sent:
+        await api.call("GET", "/x")
+    else:
+        with pytest.raises(ApiError, match="says the session has expired") as e:
+            await api.call("GET", "/x")
+        assert "CSRF-SECRET" not in str(e.value)
+    assert len(seen) == sent
+
+
 async def test_browser_auth_chrome_not_running():
     async def down(host):
         raise ConnectionError("no chrome")
@@ -336,11 +357,11 @@ async def test_make_api_browser_needs_running_chrome(monkeypatch):
         prefix="x",
         base_url="https://api.example.com",
         env_prefix="EX_MCP",
-        auth=AuthScheme(name="b", type="browser", login_path="/Login"),
+        auth=AuthScheme(name="b", type="browser", login_path="/Login", session_cookie="sid"),
     )
     api = build(plan, None)
     api.set_transport(httpx.MockTransport(lambda r: httpx.Response(200, json={})))
-    assert api.login_path == "/Login"
+    assert api.login_path == "/Login" and api.session_cookie == "sid"
     with pytest.raises(ApiError, match="not running"):
         await api.call("GET", "/x")
 

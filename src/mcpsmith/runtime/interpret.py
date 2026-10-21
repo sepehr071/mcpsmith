@@ -65,7 +65,11 @@ def make_api(plan: Plan, source: Source | None, *, proxy: str | None = None, coo
                 raise ConnectionError("mcpsmith Chrome is not running")
             return await browser.cookies_for(host, st["port"])
 
-        extra = {"cookie_provider": cookie_provider or from_chrome, "login_path": plan.auth.login_path}
+        extra = {
+            "cookie_provider": cookie_provider or from_chrome,
+            "login_path": plan.auth.login_path,
+            "session_cookie": plan.auth.session_cookie,
+        }
     return Api(**api_kwargs(plan, source), secret=secret, proxy=proxy, **extra)
 
 
