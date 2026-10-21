@@ -123,9 +123,10 @@ def test_paths_and_overrides(tmp_path):
     assert (
         a["gemini"].config_path(home, {"GEMINI_CLI_HOME": str(home / "g")}) == home / "g" / ".gemini" / "settings.json"
     )
-    assert a["claude"].skills_root(home) == home / ".claude" / "skills"
+    assert a["claude"].skills_root(home, {}) == home / ".claude" / "skills"
+    assert a["claude"].skills_root(home, {"CLAUDE_CONFIG_DIR": str(home / "c")}) == home / "c" / "skills"
     for k in ("codex", "cursor", "gemini"):
-        assert a[k].skills_root(home) == home / ".agents" / "skills"
+        assert a[k].skills_root(home, {}) == home / ".agents" / "skills"
     assert [a[k].rea_client for k in a] == ["claude_code", "codex", "cursor", "gemini_cli"]
 
 
@@ -211,7 +212,7 @@ def test_setup_remove_roundtrip(tmp_path):
     assert not [c for c in plan if c.action == "add"] and {c.action for c in plan} == {"skip"}
 
     rc, calls = go(home, "--yes", "--remove", "--agents", "claude,codex")
-    assert ["uninstall" in c for c in calls] == [True, True]
+    assert calls == []  # REA is left installed on remove
     assert json.loads((home / ".claude.json").read_text()) == orig_json
     assert (home / ".codex" / "config.toml").read_text(encoding="utf-8").startswith(TOML)
     assert not any((home / ".claude" / "skills").glob("*")) and not any((home / ".agents" / "skills").glob("*"))
@@ -268,6 +269,92 @@ def test_verify_failure_restores(tmp_path, monkeypatch):
     monkeypatch.setattr(AGENTS["claude"].__class__, "has", lambda self, doc, name: False)
     rc, _ = go(home, "--yes", "--agents", "claude", "--no-rea", "--no-skills")
     assert rc == 1 and (home / ".claude.json").read_bytes() == before
+
+
+def test_remove_keeps_rea_and_prints_command(tmp_path, capsys):
+    home = make_home(tmp_path)
+    rc, calls = go(home, "--yes", "--remove", "--agents", "claude")
+    assert rc == 0 and calls == []
+    assert "REA left installed; remove it with: npx -y rea-agents@6.7.0 uninstall --client claude_code --yes" in (
+        capsys.readouterr().out
+    )
+
+
+def test_write_is_atomic_and_keeps_symlink(tmp_path, monkeypatch):
+    home = make_home(tmp_path)
+    real = home / "dotfiles" / "claude.json"
+    real.parent.mkdir()
+    real.write_bytes((home / ".claude.json").read_bytes())
+    (home / ".claude.json").unlink()
+    try:
+        (home / ".claude.json").symlink_to(real)
+    except OSError:
+        pytest.skip("symlinks not permitted")
+    before, seen = real.read_bytes(), []
+    replace = setup_run.os.replace
+
+    def spy(src, dst):
+        seen.append((Path(dst), real.read_bytes() == before, json.loads(Path(src).read_text())))
+        replace(src, dst)
+
+    monkeypatch.setattr(setup_run.os, "replace", spy)
+    go(home, "--yes", "--agents", "claude", "--no-rea", "--no-skills")
+    assert seen and seen[0][0] == real.resolve() and seen[0][1] and "mcpsmith" in seen[0][2]["mcpServers"]
+    assert (home / ".claude.json").is_symlink() and "mcpsmith" in json.loads(real.read_text())["mcpServers"]
+    assert not list(real.parent.glob("*.tmp"))
+
+
+def test_user_skill_survives_install_and_remove(tmp_path, capsys):
+    home = make_home(tmp_path)
+    mine = home / ".claude" / "skills" / "extract-api"
+    mine.mkdir(parents=True)
+    (mine / "SKILL.md").write_text("mine", encoding="utf-8")
+    go(home, "--yes", "--agents", "claude", "--no-rea")
+    assert "exists and is not mcpsmith's" in capsys.readouterr().out
+    assert (mine / "SKILL.md").read_text(encoding="utf-8") == "mine" and not (mine / ".mcpsmith").exists()
+    assert (home / ".claude" / "skills" / "build-mcp-server" / ".mcpsmith").is_file()
+    go(home, "--yes", "--remove", "--agents", "claude", "--no-rea")
+    assert (mine / "SKILL.md").read_text(encoding="utf-8") == "mine"
+    assert not (home / ".claude" / "skills" / "build-mcp-server").exists()
+
+
+def test_claude_config_dir_skills_root(tmp_path):
+    home = make_home(tmp_path)
+    cdir = home / "cc"
+    cdir.mkdir()
+    go(home, "--yes", "--agents", "claude", "--no-rea", env={"CLAUDE_CONFIG_DIR": str(cdir)})
+    assert (cdir / "skills" / "build-mcp-server" / "SKILL.md").is_file()
+    assert not (home / ".claude" / "skills").exists()
+
+
+def test_rea_timeout_is_failed_line(tmp_path, capsys):
+    home = make_home(tmp_path)
+    seen = {}
+
+    def runner(cmd, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"])
+
+    args = build_parser().parse_args(["setup", "--yes", "--agents", "claude", "--no-skills"])
+    rc = setup_run.cmd(args, home, {}, lambda c: "/bin/" + c, runner, Tty())
+    assert rc == 1 and seen["timeout"] == 300 and "FAILED claude rea: timed out" in capsys.readouterr().out
+
+
+def test_skill_copy_error_continues_with_other_agents(tmp_path, capsys, monkeypatch):
+    home = make_home(tmp_path)
+    real_copy = setup_run.shutil.copytree
+
+    def copy(src, dst, **kw):
+        if ".claude" in Path(dst).parts:
+            raise OSError("locked")
+        return real_copy(src, dst, **kw)
+
+    monkeypatch.setattr(setup_run.shutil, "copytree", copy)
+    rc, _ = go(home, "--yes", "--agents", "claude,codex", "--no-rea")
+    out = capsys.readouterr().out
+    assert rc == 1 and "FAILED skill" in out and "locked" in out
+    assert (home / ".agents" / "skills" / "build-mcp-server" / "SKILL.md").is_file()
+    assert "mcp_servers.mcpsmith" in (home / ".codex" / "config.toml").read_text(encoding="utf-8")
 
 
 def test_non_tty_without_yes_exits_2(tmp_path, capsys, monkeypatch):

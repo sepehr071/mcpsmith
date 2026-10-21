@@ -42,15 +42,15 @@ class Agent:
     rea_client: str
     toml: bool
     config: Callable[[Path, dict], Path]
-    skills: Callable[[Path], Path]
+    skills: Callable[[Path, dict], Path]
     config_dir: Callable[[Path, dict], Path]
     clis: tuple[str, ...]
 
     def config_path(self, home: Path, environ) -> Path:
         return self.config(home, environ)
 
-    def skills_root(self, home: Path) -> Path:
-        return self.skills(home)
+    def skills_root(self, home: Path, environ) -> Path:
+        return self.skills(home, environ)
 
     def detected(self, home: Path, environ, which=shutil.which) -> bool:
         return self.config_dir(home, environ).is_dir() or any(which(cli) for cli in self.clis)
@@ -112,7 +112,7 @@ def _gemini_dir(home, environ):
     return Path(environ.get("GEMINI_CLI_HOME") or home) / ".gemini"
 
 
-def _agent_skills(home):
+def _agent_skills(home, environ):
     return home / ".agents" / "skills"
 
 
@@ -124,7 +124,7 @@ AGENTS = {
         lambda home, env: (
             Path(env["CLAUDE_CONFIG_DIR"]) / ".claude.json" if env.get("CLAUDE_CONFIG_DIR") else home / ".claude.json"
         ),
-        lambda home: home / ".claude" / "skills",
+        lambda home, env: _claude_dir(home, env) / "skills",
         _claude_dir,
         ("claude",),
     ),

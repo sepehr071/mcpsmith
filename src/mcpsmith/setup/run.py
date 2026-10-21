@@ -14,6 +14,8 @@ from .agents import AGENTS, proxy_env, server_entry
 
 REA = "rea-agents@6.7.0"
 NAMES = ("mcpsmith", "mcpsmith-chrome")  # entries we own; every other entry is never touched
+MARKER = ".mcpsmith"  # file in each skill folder we install; folders without it are the user's
+REA_TIMEOUT = 300
 NO_NODE = "npx not found (install Node.js)"
 
 
@@ -87,16 +89,21 @@ def plan(home, environ, agents, rea, skills, remove, which=shutil.which, windows
             changes.append(Change(aid, "server", str(agent.config_path(home, environ)), "skip", f"skipped: {e}"))
             continue
         changes += server_changes
-        roots.setdefault(agent.skills_root(home), []).append(aid)
+        roots.setdefault(agent.skills_root(home, environ), []).append(aid)
         if rea:
             cmd = ["npx", "-y", REA, "uninstall" if remove else "setup", "--client", agent.rea_client, "--yes"]
+            if remove:  # the user may have had REA before setup, so never uninstall it for them
+                changes.append(
+                    Change(aid, "rea", " ".join(cmd), "skip", f"REA left installed; remove it with: {' '.join(cmd)}")
+                )
+                continue
             if windows:
                 cmd = ["cmd", "/d", "/c", *cmd]
             if not npx:
                 changes.append(Change(aid, "rea", " ".join(cmd), "skip", NO_NODE, cmd=tuple(cmd)))
             else:
                 known = any(c.action in ("skip", "update") and c.name == "mcpsmith" for c in server_changes)
-                action = "remove" if remove else "update" if known else "add"
+                action = "update" if known else "add"
                 changes.append(Change(aid, "rea", " ".join(cmd), action, "delegated to rea-agents", cmd=tuple(cmd)))
     if skills:
         for root, ids in roots.items():
@@ -111,6 +118,16 @@ def plan(home, environ, agents, rea, skills, remove, which=shutil.which, windows
             reason = "up to date" if action == "skip" and not remove else "not installed" if action == "skip" else ""
             changes.append(Change(",".join(ids), "skill", str(root), action, reason))
     return changes
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    target = path.resolve()  # follow a symlinked dotfile so the link survives
+    tmp = target.with_name(target.name + ".mcpsmith.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _write_server(change: Change) -> str:
@@ -131,15 +148,18 @@ def _write_server(change: Change) -> str:
         if original and b"\r\n" in original:
             text = text.replace("\n", "\r\n")
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(text.encode("utf-8"))
+        _atomic_write(path, text.encode("utf-8"))
         check = agent.load(path)
         if agent.has(check, change.name) != (change.action != "remove"):
             raise ValueError("entry not as expected after writing")
     except (OSError, ValueError, TypeError, AttributeError) as e:
-        if original is None:
-            path.unlink(missing_ok=True)
-        else:
-            path.write_bytes(original)
+        try:
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                _atomic_write(path, original)
+        except OSError as e2:
+            e = f"{e}; restore failed: {e2}"
         return f"FAILED {change.agent} {change.name}: {e}; restored {path}"
     return f"{change.action} {change.agent} {change.name} in {path}"
 
@@ -153,16 +173,32 @@ def apply(changes, runner=subprocess.run) -> list[str]:
             lines.append(_write_server(c))
         elif c.kind == "skill":
             root = Path(c.target)
+            done = []
             for n in _skill_names():
-                if c.action == "remove":
-                    shutil.rmtree(root / n, ignore_errors=True)
-                else:
-                    shutil.copytree(skills_dir() / n, root / n, dirs_exist_ok=True)
-            lines.append(f"{c.action} skills in {root}")
+                dest = root / n
+                if not dest.exists():
+                    if c.action == "remove":
+                        continue
+                elif not (dest / MARKER).is_file():
+                    lines.append(f"skip {n} in {root}: exists and is not mcpsmith's")
+                    continue
+                try:
+                    if c.action == "remove":
+                        shutil.rmtree(dest)
+                    else:
+                        shutil.copytree(skills_dir() / n, dest, dirs_exist_ok=True)
+                        (dest / MARKER).write_text("installed by mcpsmith setup\n", encoding="utf-8")
+                    done.append(n)
+                except OSError as e:
+                    lines.append(f"FAILED skill {n} in {root}: {e}")
+            if done:
+                lines.append(f"{c.action} skills in {root}: {', '.join(done)}")
         else:
             try:
-                r = runner(list(c.cmd), capture_output=True, text=True, check=False)
+                r = runner(list(c.cmd), capture_output=True, text=True, check=False, timeout=REA_TIMEOUT)
                 ok, tail = r.returncode == 0, (r.stderr or r.stdout or "").strip()[-300:]
+            except subprocess.TimeoutExpired:
+                ok, tail = False, f"timed out after {REA_TIMEOUT}s"
             except OSError as e:
                 ok, tail = False, str(e)
             lines.append(f"{c.action} {c.agent} rea" if ok else f"FAILED {c.agent} rea: {tail}")

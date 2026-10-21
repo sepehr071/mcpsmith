@@ -17,9 +17,9 @@ Registers the `mcpsmith` and `mcpsmith-chrome` (Chrome DevTools) MCP servers and
 - `--dry-run` prints the plan and writes nothing.
 - `--agents claude,codex` limits it to those agents (default: the ones found).
 - `--no-rea` skips REA; `--no-skills` skips the skills; `--yes` skips the confirmation.
-- `--remove` undoes what setup did. Entries you made yourself are left alone.
+- `--remove` undoes what setup did. Entries and skill folders you made yourself are left alone. REA stays installed (you may have had it before); the command prints the line that removes it.
 
-Each config file setup changes is first copied to `*.mcpsmith.bak`. Restart your agents afterwards. Run `mcpsmith browser` before using Chrome DevTools: it starts the shared Chrome the server connects to.
+Before setup first changes a config file, it copies the file to `*.mcpsmith.bak`. The backup is made once and not refreshed by later runs. Restart your agents afterwards. Run `mcpsmith browser` before using Chrome DevTools: it starts the shared Chrome the server connects to.
 
 Claude Code plugin users already get all three servers from the plugin and do not need `setup`.
 
