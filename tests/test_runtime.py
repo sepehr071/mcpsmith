@@ -273,3 +273,71 @@ async def test_build_server_compact_output_and_annotations():
         result = await c.call_tool("ex_echo", {"text": 'سلام "hi"'})
         assert not result.is_error and len(result.content) == 1
         assert result.content[0].text == '{"text":"سلام \\"hi\\"","empty":[],"nested":{"b":"x"}}'
+
+
+async def _jar(host):
+    return {"sid": "TOPSECRET"}
+
+
+async def test_browser_auth_cookies_base_host_only():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    api = make_api(handler, hosts=["cdn.example.com"], auth={"type": "browser"}, cookie_provider=_jar)
+    await api.call("GET", "/x")
+    await api.call("GET", "https://cdn.example.com/y")
+    assert seen[0].headers["cookie"] == "sid=TOPSECRET"
+    assert "cookie" not in seen[1].headers
+    assert not any("TOPSECRET" in k for k in api._cache for k in map(str, k))
+
+
+@pytest.mark.parametrize("status,loc", [(302, "/Account/Login?ReturnUrl=%2F"), (401, "")])
+async def test_browser_auth_session_expired(status, loc):
+    api = make_api(
+        lambda r: httpx.Response(status, headers={"location": loc} if loc else {}),
+        auth={"type": "browser"},
+        cookie_provider=_jar,
+        login_path="/Account/Login",
+    )
+    with pytest.raises(ApiError, match="says the session has expired") as e:
+        await api.call("GET", "/x")
+    assert "TOPSECRET" not in str(e.value)
+
+
+async def test_browser_auth_chrome_not_running():
+    async def down(host):
+        raise ConnectionError("no chrome")
+
+    api = make_api(lambda r: httpx.Response(200, json={}), auth={"type": "browser"}, cookie_provider=down)
+    with pytest.raises(ApiError, match="The mcpsmith Chrome is not running"):
+        await api.call("GET", "/x")
+
+
+def test_proxy_overrides_env(monkeypatch):
+    monkeypatch.setenv("EX_MCP_PROXY", "http://env:1")
+    assert make_api(lambda r: None, proxy="http://given:2")._proxies() == ["http://given:2"]
+
+
+async def test_make_api_browser_needs_running_chrome(monkeypatch):
+    from mcpsmith.model import AuthScheme, Plan
+    from mcpsmith.runtime.interpret import make_api as build
+
+    monkeypatch.setattr("mcpsmith.browser.status", lambda: None)
+    plan = Plan(
+        name="x-mcp",
+        title="X",
+        description="d",
+        instructions="i",
+        prefix="x",
+        base_url="https://api.example.com",
+        env_prefix="EX_MCP",
+        auth=AuthScheme(name="b", type="browser", login_path="/Login"),
+    )
+    api = build(plan, None)
+    api.set_transport(httpx.MockTransport(lambda r: httpx.Response(200, json={})))
+    assert api.login_path == "/Login"
+    with pytest.raises(ApiError, match="not running"):
+        await api.call("GET", "/x")

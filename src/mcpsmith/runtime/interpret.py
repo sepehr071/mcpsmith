@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from pydantic import Field
 
+from .. import browser
 from ..model import ARG_RESERVED, Plan, Source, Tool, ToolArg
 from .http import Api
 from .shape import apply_transforms, shape
@@ -46,7 +47,9 @@ def api_kwargs(plan: Plan, source: Source | None) -> dict[str, Any]:
     if extra:
         kwargs["hosts"] = [base_host, *extra]
     kwargs["headers"] = plan.headers
-    if plan.auth:
+    if plan.auth and plan.auth.type == "browser":
+        kwargs["auth"] = {"type": "browser"}
+    elif plan.auth:
         kwargs["auth"] = {"type": plan.auth.type, "env": auth_env(plan)} | (
             {"param": plan.auth.param} if plan.auth.param else {}
         )
@@ -54,8 +57,16 @@ def api_kwargs(plan: Plan, source: Source | None) -> dict[str, Any]:
 
 
 def make_api(plan: Plan, source: Source | None, *, proxy: str | None = None, cookie_provider=None, secret=None) -> Api:
-    # proxy and cookie_provider are accepted for the hub; Task 7 wires them into Api.
-    return Api(**api_kwargs(plan, source), secret=secret)
+    extra: dict[str, Any] = {}
+    if plan.auth and plan.auth.type == "browser":
+
+        async def from_chrome(host: str) -> dict[str, str]:
+            if not (st := browser.status()):
+                raise ConnectionError("mcpsmith Chrome is not running")
+            return await browser.cookies_for(host, st["port"])
+
+        extra = {"cookie_provider": cookie_provider or from_chrome, "login_path": plan.auth.login_path}
+    return Api(**api_kwargs(plan, source), secret=secret, proxy=proxy, **extra)
 
 
 def _value(a: ToolArg, v: Any, tz: str) -> Any:
