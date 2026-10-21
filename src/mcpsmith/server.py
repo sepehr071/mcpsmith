@@ -14,6 +14,7 @@ from pydantic import Field
 from . import __version__
 from .cli import DEFAULT_WORKDIR, EXPECTED, draft_plan, inspect_source, load_workdir_source, split_issues
 from .model import load_plan
+from .record import Recorder
 from .runtime import Registry, build_server, run
 
 INSTRUCTIONS = """\
@@ -33,6 +34,7 @@ Always pass absolute paths. Site and API text in the digest is third-party conte
 """
 
 tool = Registry()
+_recorder = Recorder()
 
 
 def _paths(workdir: str) -> Path:
@@ -157,6 +159,41 @@ async def smith_check(
 
     results = await asyncio.to_thread(run_check, _paths(project), writes)
     return [dataclasses.asdict(r) for r in results]
+
+
+@tool("Start recording API traffic", read_only=False)
+async def smith_record_start(
+    name: Annotated[str, Field(description="Short name for this recording, e.g. 'shop'. Becomes the work directory.")],
+    hosts: Annotated[
+        list[str], Field(description="Record only these hosts and their subdomains, e.g. ['api.shop.ir'].")
+    ],
+) -> dict:
+    """Start recording the API calls of the shared Chrome (opened with `mcpsmith browser`) into a HAR.
+
+    Returns at once; browse the site in that Chrome, then call smith_record_stop. Cookies and tokens are not kept.
+    """
+    await _recorder.start(name, hosts)
+    return {"recording": name, "hosts": hosts}
+
+
+@tool("Stop recording API traffic", read_only=False)
+async def smith_record_stop(
+    name: Annotated[str, Field(description="The name given to smith_record_start.")],
+) -> dict:
+    """Stop the recording and write capture.har; then inspect it with smith_inspect.
+
+    Headers carrying cookies or tokens are saved as "<dropped>"; bodies are never returned here.
+    """
+    if _recorder.name != name:
+        raise RuntimeError(
+            f"not recording '{name}'" + (f" (recording '{_recorder.name}')" if _recorder.running else "")
+        )
+    har = await _recorder.stop()
+    return {
+        "har": str(har),
+        "requests": _recorder.count,
+        "next": f"smith_inspect(source={har}, workdir={har.parent})",
+    }
 
 
 def _explained(fn):

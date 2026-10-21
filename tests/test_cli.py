@@ -131,6 +131,8 @@ async def test_server_tools(client, spec, tmp_path):
         "smith_validate",
         "smith_generate",
         "smith_check",
+        "smith_record_start",
+        "smith_record_stop",
     }
     assert tools["smith_validate"].annotations.read_only_hint is True
 

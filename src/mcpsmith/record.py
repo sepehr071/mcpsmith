@@ -1,0 +1,195 @@
+"""Record the API traffic of the shared Chrome over CDP into a HAR. Secret headers never reach disk."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlsplit
+
+from . import browser
+
+MAX_BODY = 2_000_000
+DROPPED = "<dropped>"
+SECRET_HEADERS = {"cookie", "set-cookie", "authorization", "proxy-authorization"}
+SECRET_PARTS = ("csrf", "xsrf", "verification")
+TEXTUAL = re.compile(r"json|text|xml|javascript|x-www-form-urlencoded", re.I)
+
+
+def _headers(h: dict | None) -> list[dict]:
+    out = []
+    for k, v in (h or {}).items():
+        secret = k.lower() in SECRET_HEADERS or any(p in k.lower() for p in SECRET_PARTS)
+        out.append({"name": k, "value": DROPPED if secret else str(v)})
+    return out
+
+
+class Recorder:
+    def __init__(self):
+        self.name: str | None = None
+        self.hosts: list[str] = []
+        self.entries: dict[tuple, dict] = {}
+        self._cdp: browser.Cdp | None = None
+        self._task: asyncio.Task | None = None
+        self._bodies: set[asyncio.Task] = set()
+        self._sessions: set[str] = set()
+
+    @property
+    def running(self) -> bool:
+        return self.name is not None
+
+    def _match(self, url: str) -> bool:
+        host = (urlsplit(url).hostname or "").lower()
+        return not self.hosts or any(host == h or host.endswith("." + h) for h in self.hosts)
+
+    async def start(self, name: str, hosts: list[str]) -> None:
+        if self.running:
+            raise RuntimeError(f"already recording '{self.name}'; call smith_record_stop first")
+        if not re.fullmatch(r"[\w.-]+", name):
+            raise ValueError("name must be letters, digits, '_', '-' or '.'")
+        info = browser.status()
+        if not info:
+            raise RuntimeError("Chrome is not running; start it with `mcpsmith browser`")
+        self.name, self.hosts = name, [h.lower().lstrip(".") for h in hosts]
+        self.entries.clear()
+        self._sessions.clear()
+        try:
+            self._cdp = await browser.Cdp.connect(info["port"])
+            self._task = asyncio.ensure_future(self._run())
+            await asyncio.wait_for(self._attach_all(), 10)
+        except BaseException:
+            await self._close()
+            raise
+
+    async def _attach_all(self) -> None:
+        await self._cdp.call("Target.setDiscoverTargets", {"discover": True})
+        await self._cdp.call(
+            "Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True}
+        )
+        # Chrome may not auto-attach to tabs that are already open
+        for t in (await self._cdp.call("Target.getTargets")).get("targetInfos", []):
+            if t.get("type") == "page" and not t.get("attached"):
+                await self._cdp.call("Target.attachToTarget", {"targetId": t["targetId"], "flatten": True})
+
+    async def _run(self) -> None:
+        async for ev in self._cdp.events():
+            p, s = ev.get("params", {}), ev.get("sessionId")
+            match ev["method"]:
+                case "Target.attachedToTarget":
+                    if p.get("targetInfo", {}).get("type") == "page" and p["sessionId"] not in self._sessions:
+                        self._sessions.add(p["sessionId"])
+                        self._spawn(self._cdp.call("Network.enable", session=p["sessionId"]))
+                case "Network.requestWillBeSent":
+                    self._request(s, p)
+                case "Network.responseReceived":
+                    if e := self.entries.get((s, p["requestId"])):
+                        e["response"] = p["response"]
+                        e["type"] = p.get("type") or e["type"]
+                case "Network.loadingFinished":
+                    if (e := self.entries.get((s, p["requestId"]))) and "response" in e:
+                        e["size"] = p.get("encodedDataLength", 0)
+                        self._spawn(self._body(s, p["requestId"], e))
+
+    def _spawn(self, coro) -> None:
+        t = asyncio.ensure_future(self._swallow(coro))
+        self._bodies.add(t)
+        t.add_done_callback(self._bodies.discard)
+
+    @staticmethod
+    async def _swallow(coro) -> None:
+        with contextlib.suppress(RuntimeError, asyncio.TimeoutError):  # tab closed mid-request
+            await asyncio.wait_for(coro, 10)
+
+    def _request(self, session: str | None, p: dict) -> None:
+        if not self._match(p["request"]["url"]):
+            return
+        self.entries[(session, p["requestId"])] = {
+            "request": p["request"],
+            "type": p.get("type") or "",
+            "started": p.get("wallTime") or datetime.now(timezone.utc).timestamp(),
+        }
+
+    async def _body(self, session: str | None, request_id: str, e: dict) -> None:
+        mime = e["response"].get("mimeType") or ""
+        if e["size"] > MAX_BODY or not TEXTUAL.search(mime):
+            return
+        r = await self._cdp.call("Network.getResponseBody", {"requestId": request_id}, session=session)
+        if len(r.get("body", "")) <= MAX_BODY:
+            e["body"] = r
+
+    async def _close(self) -> None:
+        if self._task:
+            self._task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._task
+        if self._bodies:
+            await asyncio.wait(self._bodies, timeout=10)
+        if self._cdp:
+            await self._cdp.close()
+        self._task = self._cdp = None
+        self.name = None
+
+    async def stop(self) -> Path:
+        if not self.running:
+            raise RuntimeError("not recording; call smith_record_start first")
+        name = self.name
+        await self._close()
+        out = browser.home() / "work" / name / "capture.har"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        har = {"log": {"version": "1.2", "creator": {"name": "mcpsmith", "version": "1"}, "entries": self._har()}}
+        out.write_text(json.dumps(har), encoding="utf-8", newline="\n")
+        return out
+
+    @property
+    def count(self) -> int:
+        return len(self._har())
+
+    def _har(self) -> list[dict]:
+        return [_entry(e) for e in self.entries.values() if "response" in e]
+
+
+def _entry(e: dict) -> dict:
+    req, resp = e["request"], e["response"]
+    mime = resp.get("mimeType") or ""
+    content = {"size": e.get("size", 0), "mimeType": mime}
+    if body := e.get("body"):
+        content["text"] = body["body"]
+        if body.get("base64Encoded"):
+            content["encoding"] = "base64"
+    entry = {
+        "startedDateTime": datetime.fromtimestamp(e["started"], timezone.utc).isoformat(),
+        "time": 0,
+        "request": {
+            "method": req["method"],
+            "url": req["url"],
+            "httpVersion": "HTTP/1.1",
+            "headers": _headers(req.get("headers")),
+            "queryString": [],
+            "cookies": [],
+            "headersSize": -1,
+            "bodySize": len(req.get("postData") or ""),
+        },
+        "response": {
+            "status": resp.get("status", 0),
+            "statusText": resp.get("statusText", ""),
+            "httpVersion": "HTTP/1.1",
+            "headers": _headers(resp.get("headers")),
+            "cookies": [],
+            "content": content,
+            "redirectURL": "",
+            "headersSize": -1,
+            "bodySize": -1,
+        },
+        "cache": {},
+        "timings": {"send": 0, "wait": 0, "receive": 0},
+        "_resourceType": e["type"].lower(),
+    }
+    if req.get("postData"):
+        entry["request"]["postData"] = {
+            "mimeType": (req.get("headers") or {}).get("Content-Type", ""),
+            "text": req["postData"],
+        }
+    return entry
