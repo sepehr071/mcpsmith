@@ -45,7 +45,11 @@ class _Skip(Exception):
 
 
 def read_app(
-    path: Path, notes: list[str] | None = None, max_files: int = 400, max_bytes: int = 8_000_000
+    path: Path,
+    notes: list[str] | None = None,
+    max_files: int = 400,
+    max_bytes: int = 8_000_000,
+    max_map_bytes: int = 64_000_000,
 ) -> dict[str, str]:
     """{logical file name: text} of an app's JavaScript/TypeScript from a directory, an .asar or one file.
 
@@ -61,12 +65,14 @@ def read_app(
             for p in path.rglob("*")
             if p.is_file() and p.suffix in EXTS | {".map"} and "node_modules" not in p.relative_to(path).parts
         )
-        cands = [(n, p.stat().st_size, p.read_bytes if p.stat().st_size <= max_bytes else None) for n, p in found]
-        raw = _cap(cands, notes, skipped, max_files, max_bytes)
+        cands = [(n, p.stat().st_size, p.read_bytes) for n, p in found]
+        raw = _cap(cands, notes, skipped, max_files, max_bytes, max_map_bytes)
     elif path.suffix == ".asar":
-        raw = _cap(_asar_entries(path, max_bytes), notes, skipped, max_files, max_bytes)
+        raw = _cap(_asar_entries(path), notes, skipped, max_files, max_bytes, max_map_bytes)
     elif path.is_file():
-        raw = _cap([(path.name, path.stat().st_size, path.read_bytes)], notes, skipped, max_files, max_bytes)
+        raw = _cap(
+            [(path.name, path.stat().st_size, path.read_bytes)], notes, skipped, max_files, max_bytes, max_map_bytes
+        )
     else:
         raise ValueError(f"{path}: no such file or directory")
     texts = {n: b.decode("utf-8-sig", errors="replace") for n, b in raw.items() if not n.endswith(".map")}
@@ -88,16 +94,20 @@ def read_app(
             tail = "its .map sources were read instead"
         else:
             tail = "not read, and no .map sources cover it"
-        notes.append(f"skipped {name}: {size} bytes is over the {max_bytes}-byte cap; {tail}")
+        cap = max_map_bytes if name.endswith(".map") else max_bytes
+        notes.append(f"skipped {name}: {size} bytes is over the {cap}-byte cap; {tail}")
     return out
 
 
-def _cap(cands, notes: list[str], skipped: list[tuple[str, int]], max_files: int, max_bytes: int) -> dict[str, bytes]:
+def _cap(
+    cands, notes: list[str], skipped: list[tuple[str, int]], max_files: int, max_bytes: int, max_map_bytes: int
+) -> dict[str, bytes]:
+    """Read what fits: `.map` files are JSON whose sourcesContent is the payload, so they get their own larger cap."""
     if len(cands) > max_files:
         notes.append(f"dropped {len(cands) - max_files} files beyond the {max_files}-file cap")
     out = {}
     for name, size, read in cands[:max_files]:
-        if read is None or size > max_bytes:
+        if size > (max_map_bytes if name.endswith(".map") else max_bytes):
             skipped.append((name, size))
         else:
             out[name] = read()
@@ -125,7 +135,7 @@ def _map_sources(name: str, text: str, notes: list[str]) -> dict[str, str]:
     return out
 
 
-def _asar_entries(path: Path, max_bytes: int):
+def _asar_entries(path: Path):
     """(name, size, reader) of every JS/map file in an .asar: 8-byte pickle header, JSON index, then file data."""
     try:
         with path.open("rb") as f:

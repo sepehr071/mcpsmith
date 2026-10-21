@@ -205,6 +205,26 @@ def test_oversize_note_says_whether_a_map_covered_it(tmp_path):
     assert any("lone.js:" in n and "no .map sources cover it" in n for n in notes)
 
 
+def test_big_map_replaces_its_bundle_and_a_too_big_map_falls_back(tmp_path):
+    bundle = "t.request('GET', `repos/${e}/${t}`)" + " " * 200  # over the 100-byte raw cap, as a real bundle is
+    (tmp_path / "app.js").write_text(bundle, encoding="utf-8")
+    (tmp_path / "app.js.map").write_text(
+        json.dumps(
+            {"sources": ["api.ts"], "sourcesContent": ["x.request('GET', `repos/${owner}/${name}`)" + " " * 200]}
+        ),
+        encoding="utf-8",
+    )
+    notes: list[str] = []
+    src = electron.parse_sources(electron.read_app(tmp_path, notes, max_bytes=100, max_map_bytes=10_000))
+    assert pairs(src) == {("GET", "/repos/{owner}/{name}")}  # the map, not the minified bundle
+    assert [n for n in notes if "app.js:" in n] and "its .map sources were read instead" in notes[0]
+    # the map is over its own cap: its bundle is read (small cap lifted for it) and the note names the map
+    notes = []
+    src = electron.parse_sources(electron.read_app(tmp_path, notes, max_bytes=10_000, max_map_bytes=100))
+    assert pairs(src) == {("GET", "/repos/{e}/{t}")}
+    assert any("skipped app.js.map:" in n and "100-byte cap" in n for n in notes)
+
+
 # ---------- CLI and MCP tool ----------
 
 
