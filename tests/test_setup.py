@@ -24,6 +24,7 @@ def test_wheel_contains_skills(tmp_path):
 # --- agent targets ---
 
 import pytest  # noqa: E402
+import tomlkit  # noqa: E402
 
 from mcpsmith import __version__  # noqa: E402
 from mcpsmith.setup.agents import AGENTS, proxy_env, server_entry  # noqa: E402
@@ -180,7 +181,7 @@ def go(tmp_path, *argv, which=lambda c: "/bin/" + c, stdin=None, env=None):
 def test_dry_run_writes_nothing(tmp_path, capsys):
     home = make_home(tmp_path)
     before = (home / ".claude.json").read_bytes()
-    rc, calls = go(home, "--dry-run", "--agents", "claude,codex")
+    rc, calls = go(home, "--dry-run", "--rea", "--agents", "claude,codex")
     out = capsys.readouterr().out
     assert rc == 0 and calls == []
     assert (home / ".claude.json").read_bytes() == before
@@ -191,7 +192,7 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
 def test_setup_remove_roundtrip(tmp_path):
     home = make_home(tmp_path)
     orig_json = json.loads((home / ".claude.json").read_text())
-    rc, calls = go(home, "--yes", "--agents", "claude,codex")
+    rc, calls = go(home, "--yes", "--rea", "--agents", "claude,codex")
     assert rc == 0
     assert [c[-3:] for c in calls] == [["--client", "claude_code", "--yes"], ["--client", "codex", "--yes"]]
     assert "setup" in calls[0] and setup_run.REA in calls[0]
@@ -211,7 +212,7 @@ def test_setup_remove_roundtrip(tmp_path):
     plan = setup_run.plan(home, {}, ["claude", "codex"], False, True, False, lambda c: "/x")
     assert not [c for c in plan if c.action == "add"] and {c.action for c in plan} == {"skip"}
 
-    rc, calls = go(home, "--yes", "--remove", "--agents", "claude,codex")
+    rc, calls = go(home, "--yes", "--rea", "--remove", "--agents", "claude,codex")
     assert calls == []  # REA is left installed on remove
     assert json.loads((home / ".claude.json").read_text()) == orig_json
     assert (home / ".codex" / "config.toml").read_text(encoding="utf-8").startswith(TOML)
@@ -230,7 +231,7 @@ def test_malformed_config_skips_that_agent(tmp_path, capsys):
     (home / ".codex" / "config.toml").write_text("[[[ bad", encoding="utf-8")
     (home / ".claude.json").write_text(json.dumps({"mcpServers": "oops"}))
     (home / ".cursor").mkdir()
-    rc, calls = go(home, "--yes", "--agents", "claude,codex,cursor")
+    rc, calls = go(home, "--yes", "--rea", "--agents", "claude,codex,cursor")
     assert rc == 0 and [c[-2] for c in calls] == ["cursor"]
     assert (home / ".codex" / "config.toml").read_text(encoding="utf-8") == "[[[ bad"
     assert "mcpsmith" in json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]
@@ -239,7 +240,7 @@ def test_malformed_config_skips_that_agent(tmp_path, capsys):
 
 def test_no_node_skips_chrome_and_rea(tmp_path, capsys):
     home = make_home(tmp_path)
-    rc, calls = go(home, "--yes", "--agents", "claude", which=lambda c: None)
+    rc, calls = go(home, "--yes", "--rea", "--agents", "claude", which=lambda c: None)
     out = capsys.readouterr().out
     assert rc == 0 and calls == []
     assert out.count("npx not found") >= 2
@@ -273,7 +274,7 @@ def test_verify_failure_restores(tmp_path, monkeypatch):
 
 def test_remove_keeps_rea_and_prints_command(tmp_path, capsys):
     home = make_home(tmp_path)
-    rc, calls = go(home, "--yes", "--remove", "--agents", "claude")
+    rc, calls = go(home, "--yes", "--rea", "--remove", "--agents", "claude")
     assert rc == 0 and calls == []
     assert "REA left installed; remove it with: npx -y rea-agents@6.7.0 uninstall --client claude_code --yes" in (
         capsys.readouterr().out
@@ -335,7 +336,7 @@ def test_rea_timeout_is_failed_line(tmp_path, capsys):
         seen.update(kw)
         raise subprocess.TimeoutExpired(cmd, kw["timeout"])
 
-    args = build_parser().parse_args(["setup", "--yes", "--agents", "claude", "--no-skills"])
+    args = build_parser().parse_args(["setup", "--yes", "--rea", "--agents", "claude", "--no-skills"])
     rc = setup_run.cmd(args, home, {}, lambda c: "/bin/" + c, runner, Tty())
     assert rc == 1 and seen["timeout"] == 300 and "FAILED claude rea: timed out" in capsys.readouterr().out
 
@@ -373,3 +374,87 @@ def test_confirmation_prompt(tmp_path, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda _: "y")
     go(home, "--agents", "claude", "--no-rea")
     assert (home / ".claude.json.mcpsmith.bak").exists()
+
+
+def test_rea_is_opt_in(tmp_path):
+    home = make_home(tmp_path)
+    flags = ("--yes", "--agents", "claude", "--no-skills")
+    assert go(home, *flags)[1] == []  # default: no REA
+    assert go(home, *flags, "--no-rea")[1] == []  # old flag still accepted
+    assert [c[-3:] for c in go(home, *flags, "--rea")[1]] == [["--client", "claude_code", "--yes"]]
+
+
+# --- mcpsmith install ---
+
+from mcpsmith.model import Plan, save_plan  # noqa: E402
+
+
+def make_project(tmp_path, name="demo-mcp"):
+    project = tmp_path / "proj"
+    project.mkdir(parents=True)
+    plan = Plan(
+        name=name,
+        title="Demo",
+        description="Demo.",
+        instructions="Demo.",
+        prefix="demo",
+        env_prefix="DEMO_MCP",
+        base_url="https://x.test",
+        tools=[],
+    )
+    save_plan(plan, project / "mcpsmith.yaml")
+    return project
+
+
+def install(home, *argv, env=None):
+    args = build_parser().parse_args(["install", *argv])
+    return setup_run.install_cmd(args, home, env or {}, lambda c: "/bin/" + c, Tty())
+
+
+def test_install_adds_entry_and_removes_it(tmp_path):
+    home, project = make_home(tmp_path), make_project(tmp_path)
+    orig_json = json.loads((home / ".claude.json").read_text())
+    assert install(home, str(project), "--yes", "--agents", "claude,codex") == 0
+    local = {"command": "uv", "args": ["run", "--directory", str(project.resolve()), "demo-mcp"], "env": {}}
+    servers = json.loads((home / ".claude.json").read_text())["mcpServers"]
+    assert servers["demo-mcp"] == {"type": "stdio", **local} and set(servers) == {"o", "demo-mcp"}
+    codex = tomlkit.parse((home / ".codex" / "config.toml").read_text(encoding="utf-8"))
+    assert codex["mcp_servers"]["demo-mcp"]["args"] == local["args"] and "env" not in codex["mcp_servers"]["demo-mcp"]
+    assert json.loads((home / ".claude.json.mcpsmith.bak").read_text()) == orig_json
+    changes = setup_run.install_changes(project, home, {}, ["claude", "codex"])
+    assert {c.action for c in changes} == {"skip"}  # second run: up to date
+    assert install(home, str(project), "--yes", "--remove", "--agents", "claude,codex") == 0
+    assert json.loads((home / ".claude.json").read_text()) == orig_json
+    assert (home / ".codex" / "config.toml").read_text(encoding="utf-8").startswith(TOML)
+
+
+def test_install_pypi_entry(tmp_path):
+    home, project = make_home(tmp_path), make_project(tmp_path)
+    assert install(home, str(project), "--yes", "--pypi", "--agents", "claude") == 0
+    entry = json.loads((home / ".claude.json").read_text())["mcpServers"]["demo-mcp"]
+    assert (entry["command"], entry["args"], entry["env"]) == ("uvx", ["demo-mcp@0.1.0"], {})
+
+
+def test_install_refuses_conflicting_entry_unless_force(tmp_path, capsys):
+    home, project = make_home(tmp_path), make_project(tmp_path)
+    theirs = {"command": "node", "args": ["server.js"]}
+    (home / ".claude.json").write_text(json.dumps({"mcpServers": {"demo-mcp": theirs, "mcpsmith": {"command": "x"}}}))
+    assert install(home, str(project), "--yes", "--agents", "claude") == 1
+    assert "CONFLICT" in capsys.readouterr().out
+    assert json.loads((home / ".claude.json").read_text())["mcpServers"]["demo-mcp"] == theirs
+    assert install(home, str(project), "--yes", "--remove", "--agents", "claude") == 1
+    assert json.loads((home / ".claude.json").read_text())["mcpServers"]["demo-mcp"] == theirs
+    assert install(home, str(project), "--yes", "--force", "--agents", "claude") == 0
+    servers = json.loads((home / ".claude.json").read_text())["mcpServers"]
+    assert servers["demo-mcp"]["command"] == "uv" and servers["mcpsmith"] == {"command": "x"}
+
+
+def test_install_dry_run_and_bad_project(tmp_path, capsys):
+    home, project = make_home(tmp_path), make_project(tmp_path)
+    before = (home / ".claude.json").read_bytes()
+    assert install(home, str(project), "--dry-run", "--agents", "claude") == 0
+    assert (home / ".claude.json").read_bytes() == before and "dry run" in capsys.readouterr().out
+    with pytest.raises(OSError):
+        install(home, str(tmp_path / "missing"), "--yes", "--agents", "claude")
+    with pytest.raises(ValueError, match="reserved"):
+        setup_run.install_changes(make_project(tmp_path / "x", "mcpsmith-chrome"), home, {}, ["claude"])

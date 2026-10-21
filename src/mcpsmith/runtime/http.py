@@ -26,9 +26,11 @@ import httpx
 import truststore
 from mcp.server.mcpserver.exceptions import ToolError
 
+from . import signin
+
 log = logging.getLogger("mcpsmith")
 
-AUTH_TYPES = {"bearer", "header", "query", "cookie", "basic", "browser"}
+AUTH_TYPES = {"bearer", "header", "query", "cookie", "basic", "browser", "signin"}
 IDEMPOTENT = {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
 
 
@@ -97,6 +99,8 @@ class Api:
     ):
         if auth and (auth.get("type") not in AUTH_TYPES or not (auth.get("env") or auth.get("type") == "browser")):
             raise ValueError(f"auth needs type (one of {sorted(AUTH_TYPES)}) and env, got {auth!r}")
+        if auth and auth["type"] == "signin":
+            signin.provider(auth.get("provider", ""))  # fail at start, not on the first call
         if concurrency < 1:
             raise ValueError(f"concurrency must be at least 1, got {concurrency}")
         self.env_prefix = env_prefix
@@ -147,7 +151,7 @@ class Api:
         host = httpx.URL(url).host
         if host not in self.hosts:
             raise ApiError(f"Refusing to call unexpected host {host}.")
-        sent = False
+        sent, session, signer = False, None, None
         if host == httpx.URL(self.base_url).host:  # other allowlisted hosts never see the credential
             sent = self._add_auth(query, headers, cookies)
             if self.auth and self.auth["type"] == "browser" and self.cookie_provider:
@@ -161,6 +165,12 @@ class Api:
                     raise ApiError(self._expired_message(host), expired=True)
                 cookies.update(jar)
                 sent = True
+            if self.auth and self.auth["type"] == "signin":
+                signer = signin.provider(self.auth["provider"])
+                session = self._signin_session(signer)
+                cookies.update(signer.cookies(session))
+                headers.update(signer.HEADERS)
+                sent = True
         if any(re.search(r"[;\r\n]", str(v)) for v in cookies.values()) or any(
             re.search(r"[\r\n]", str(v)) for v in headers.values()
         ):
@@ -168,6 +178,7 @@ class Api:
         if cookies:
             headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
         payload = None if method == "GET" else _nest(body) if isinstance(body, dict) else body
+        form, sign_key = signer.encrypt(url, session, payload) if session else (None, None)
 
         shown = {k: hashlib.sha256(v.encode()).hexdigest() if k == "Cookie" else v for k, v in headers.items()}
         key = (url, json.dumps([query, shown], sort_keys=True, default=str))
@@ -180,7 +191,7 @@ class Api:
             last = attempt == self.RETRIES
             wait = self.RETRY_DELAY * 2**attempt * random.uniform(1, 1.5)
             try:
-                r, content = await self._request(method, url, query, headers, payload, host)
+                r, content = await self._request(method, url, query, headers, payload, host, form)
             except ApiError as e:
                 if last or e.status is not None or not safe:
                     raise
@@ -193,15 +204,21 @@ class Api:
 
         if self.auth and self.auth["type"] == "browser" and sent and self._expired(r):
             raise ApiError(self._expired_message(host), expired=True)
+        if session and r.status_code == 401:
+            raise ApiError(f"The {host} sign-in has expired. {signin.LOGIN_HINT}", 401, expired=True)
         if r.status_code >= 300:
             raise ApiError(self._status_message(r, content, host, sent), r.status_code)
         if not content:
             return {"status": r.status_code}
+        if sign_key:
+            content = signer.decrypt(sign_key, content)
         try:
             data = json.loads(content)
         except ValueError:
             text = content.decode("utf-8", "replace")
             return {"text": text[: self.TEXT_CLIP] + ("...[cut]" if len(text) > self.TEXT_CLIP else "")}
+        if session and (refused := signer.error(data)):  # an HTTP 200 carrying the service's own error
+            raise ApiError(f"{host} refused the request ({refused})")
         if cached:
             if len(self._cache) >= self.CACHE_MAX:
                 self._cache.pop(next(iter(self._cache)))
@@ -230,13 +247,19 @@ class Api:
         url = re.sub(r"\{([^{}]+)\}", fill, url)
         return url if url.startswith(("http://", "https://")) else f"{self.base_url}/{url.lstrip('/')}"
 
+    def _signin_session(self, signer) -> dict[str, str]:
+        try:
+            return signer.session_of(self._credential(self.auth["env"]))
+        except ValueError:  # empty, not JSON, or missing fields
+            raise ApiError(f"Not signed in to {signer.TITLE}. {signin.LOGIN_HINT}", expired=True) from None
+
     def _credential(self, env: str) -> str:
         """The environment variable first, then the keychain-backed `secret` callback."""
         return (os.environ.get(env) or (self.secret and self.secret(env)) or "").strip()
 
     def _add_auth(self, query: dict, headers: dict, cookies: dict) -> bool:
         """Add the credential; True when one was sent. Read once: a `once` secret is gone after this."""
-        if not self.auth or self.auth["type"] == "browser":
+        if not self.auth or self.auth["type"] in ("browser", "signin"):
             return False
         env, kind, param = self.auth["env"], self.auth["type"], self.auth.get("param", "")
         secret = self._credential(env)
@@ -303,13 +326,14 @@ class Api:
             verify=tls_context(), proxy=proxy, limits=httpx.Limits(max_connections=2 * self.concurrency)
         )
 
-    async def _request(self, method, url, query, headers, payload, host) -> tuple[httpx.Response, bytes]:
+    async def _request(self, method, url, query, headers, payload, host, form=None) -> tuple[httpx.Response, bytes]:
         client, limit = self._get_client()
+        body = {"data": form} if form else {"json": payload}
         try:
             async with limit:
                 if self.impersonate:
                     await asyncio.sleep(random.uniform(*self.JITTER))
-                async with client.stream(method, url, params=query, headers=headers, json=payload) as r:
+                async with client.stream(method, url, params=query, headers=headers, **body) as r:
                     content = await self._read_capped(r, host)
         except httpx.TimeoutException as e:
             raise ApiError(f"{host} did not answer in time. Try again in a moment.") from e
@@ -370,16 +394,28 @@ def _present(d: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _nest(body: dict[str, Any]) -> dict[str, Any]:
-    """{"a.b": 1, "c": 2} -> {"a": {"b": 1}, "c": 2}; None values dropped."""
+    """{"a.b": 1, "c": 2} -> {"a": {"b": 1}, "c": 2}; {"p.0": 1, "p.1": 2} -> {"p": [1, 2]}; None values dropped."""
     out: dict[str, Any] = {}
+    made: set[int] = set()  # nodes built from dotted keys; only these may become lists
     for key, value in body.items():
         if value is None:
             continue
         *parents, leaf = key.split(".")
         node = out
         for p in parents:
-            node = node.setdefault(p, {})
+            if p not in node:
+                node[p] = {}
+                made.add(id(node[p]))
+            node = node[p]
         node[leaf] = copy.deepcopy(value)
+    return _listify(out, made)
+
+
+def _listify(node: dict[str, Any], made: set[int]) -> Any:
+    """Turn built nodes whose keys are exactly 0..n-1 into lists."""
+    out = {k: _listify(v, made) if id(v) in made else v for k, v in node.items()}
+    if id(node) in made and out and set(out) == {str(i) for i in range(len(out))}:
+        return [out[str(i)] for i in range(len(out))]
     return out
 
 

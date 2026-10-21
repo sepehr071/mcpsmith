@@ -18,8 +18,9 @@ from . import browser, secrets
 from .cli import EXPECTED, load_workdir_source, split_issues
 from .design import validate
 from .model import Plan, Source, load_plan, load_source
+from .runtime import signin
 from .runtime.http import Api
-from .runtime.interpret import endpoint_of, make_api, make_tool
+from .runtime.interpret import auth_env, endpoint_of, make_api, make_tool
 from .runtime.server import READ_ONLY, WRITE, _strip_titles, compact
 
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]*")
@@ -148,6 +149,22 @@ class Hub:
             }
             for t in c.plan.tools
         ]
+
+    async def login(self, name: str, again: bool = False) -> dict:
+        """How the user signs in to a connection; for signin auth, who is signed in, or a link to sign in."""
+        conn = self._conn(name)
+        plan = conn.plan
+        if plan.auth is None:
+            return {"connection": name, "next": "This connection needs no sign-in."}
+        if plan.auth.type == "browser":
+            return {"connection": name, "next": "Ask the user to run `mcpsmith browser` and log in to the site there."}
+        env = auth_env(plan)
+        if plan.auth.type != "signin":
+            return {
+                "connection": name,
+                "next": f"Ask the user to run `mcpsmith secret set {name} {env}` in their own terminal (hidden prompt).",
+            }
+        return {"connection": name} | await signin.login(name, env, conn.api, again)
 
     async def call(self, name: str, tool: str, args: dict[str, Any]) -> Any:
         c = self._conn(name)

@@ -1,4 +1,5 @@
 import json
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -7,9 +8,11 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from test_codegen import PLAN, SOURCE
 
-from mcpsmith import server
+from mcpsmith import secrets, server
 from mcpsmith.hub import Hub
-from mcpsmith.model import save_plan, save_source
+from mcpsmith.model import AuthScheme, save_plan, save_source
+from mcpsmith.runtime import signin
+from mcpsmith.runtime.signin import xiaomi
 
 pytestmark = pytest.mark.anyio
 
@@ -142,3 +145,20 @@ async def test_connection_proxy_has_no_credentials(tmp_path):
     h.connect(workdir(tmp_path))
     meta = (home / "connections" / "demo-mcp" / "meta.json").read_text()
     assert "u:p" not in meta and json.loads(meta)["proxy"] == "http://h:1"
+
+
+async def test_login_token_step_and_signin_link(tmp_path, hub, monkeypatch):
+    hub.connect(workdir(tmp_path))
+    assert "mcpsmith secret set demo-mcp DEMO_MCP_TOKEN" in (await hub.login("demo-mcp"))["next"]
+
+    saved = {}
+    monkeypatch.setattr(xiaomi, "start_login", AsyncMock(return_value=("https://login.example", "https://poll")))
+    monkeypatch.setattr(xiaomi, "finish_login", AsyncMock(return_value={"userId": "1"}))
+    monkeypatch.setattr(secrets, "get", lambda conn, env: None)  # not signed in yet
+    monkeypatch.setattr(secrets, "set", lambda conn, env, value: saved.update({(conn, env): value}))
+    auth = AuthScheme(name="mi", type="signin", provider="xiaomi", env="DEMO_MCP_SESSION")
+    hub.connect(workdir(tmp_path, PLAN.model_copy(update={"auth": auth}), "mi"))
+    r = await hub.login("demo-mcp")
+    assert r["open"] == "https://login.example" and not r["signed_in"]
+    await signin._logins["demo-mcp"]
+    assert json.loads(saved["demo-mcp", "DEMO_MCP_SESSION"]) == {"userId": "1"}

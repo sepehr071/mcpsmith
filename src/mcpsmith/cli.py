@@ -44,8 +44,8 @@ def app_android(
 ) -> tuple[list[str], Source | None, str]:
     """Without a class or source file: candidate API classes. Otherwise write source.json + digest.md.
 
-    The interface text comes from `source_file` (decompiled by any tool) or from the APK via the JADX jar. Returns
-    (candidates, source, digest).
+    The interface text comes from `source_file` (decompiled by any tool) or from the APK via jadx. Returns
+    (candidates, source, digest); when listing candidates, the third item is sign-in advice ("" if none).
     """
     from .design import digest
     from .importers import android, jadx
@@ -55,7 +55,8 @@ def app_android(
     elif apk is None:
         raise ValueError("give an APK path, or --source FILE with an already decompiled class")
     elif not class_name:
-        return jadx.find_api_classes(apk, jar), None, ""
+        classes, signer = jadx.api_classes_and_signer(apk, jar)
+        return classes, None, android.signer_note(signer) if signer else ""
     else:
         java = jadx.class_source(apk, class_name, jar)
     src = android.parse_interface(java, base_url)
@@ -277,7 +278,7 @@ def cmd_probe(args) -> int:
 
 
 def cmd_app_android(args) -> int:
-    classes, src, _ = app_android(
+    classes, src, text = app_android(
         Path(args.apk) if args.apk else None,
         args.cls,
         args.base_url,
@@ -286,7 +287,9 @@ def cmd_app_android(args) -> int:
         Path(args.source) if args.source else None,
     )
     if src is None:
-        print("\n".join(classes) or "(no candidate classes found)")
+        print("\n".join(classes))
+        if text:
+            print(f"note: {text}")
         print(f"next: mcpsmith app-android {args.apk} --class NAME --base-url URL{_flags(args)}")
         return 0
     print(f"{src.title}: {len(src.endpoints)} endpoints, all unverified")
@@ -388,6 +391,12 @@ def cmd_setup(args) -> int:
     return cmd(args)
 
 
+def cmd_install(args) -> int:
+    from .setup.run import install_cmd
+
+    return install_cmd(args)
+
+
 def cmd_mcp(args) -> int:
     from .server import main as serve
 
@@ -459,7 +468,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("apk", nargs="?", help="path of the APK (never downloaded for you)")
     sp.add_argument("--class", dest="cls", help="decompiled Retrofit interface class; omit to list candidates")
     sp.add_argument("--source", help="a class already decompiled by any tool (.java file); skips the jar")
-    sp.add_argument("--jadx-jar", help="REA's JADX MCP jar (default: $REA_JADX_MCP_JAR, set by `npx rea-agents setup`)")
+    sp.add_argument("--jadx-jar", help="REA's JADX MCP jar (default: `jadx` on PATH, else $REA_JADX_MCP_JAR)")
     sp.add_argument("--base-url", default="", help="the app's API base URL, e.g. https://api.example.com")
 
     sp = command(
@@ -490,15 +499,25 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, default=9222)
     sp.add_argument("--no-proxy", action="store_true", help="do not pass HTTPS_PROXY on to Chrome")
 
-    sp = command(
-        "setup", cmd_setup, "register mcpsmith, Chrome DevTools MCP and REA with your coding agents", workdir=False
-    )
+    sp = command("setup", cmd_setup, "register mcpsmith and Chrome DevTools MCP with your coding agents", workdir=False)
     sp.add_argument("--agents", help="comma-separated: claude,codex,cursor,gemini (default: the ones found)")
-    sp.add_argument("--no-rea", action="store_true", help="skip the REA install")
+    sp.add_argument("--rea", action="store_true", help="also install REA (rea-agents; adds ~200 tools to each agent)")
+    sp.add_argument("--no-rea", action="store_true", help=argparse.SUPPRESS)  # old default; now a no-op
     sp.add_argument("--no-skills", action="store_true", help="skip copying the skills")
     sp.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
     sp.add_argument("--yes", action="store_true", help="do not ask for confirmation")
     sp.add_argument("--remove", action="store_true", help="undo what setup did")
+
+    sp = command(
+        "install", cmd_install, "register a project made by `mcpsmith generate` with your coding agents", workdir=False
+    )
+    sp.add_argument("project", help="the generated project directory (has mcpsmith.yaml)")
+    sp.add_argument("--agents", help="comma-separated: claude,codex,cursor,gemini (default: the ones found)")
+    sp.add_argument("--pypi", action="store_true", help="run the released package (uvx name@version), not the folder")
+    sp.add_argument("--force", action="store_true", help="replace an entry of the same name that runs something else")
+    sp.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    sp.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    sp.add_argument("--remove", action="store_true", help="remove the project's entry")
 
     command("connections", cmd_connections, "list the connections saved for the mcpsmith server", workdir=False)
     command("guide", cmd_guide, "print the tool-design rules for plan.yaml", workdir=False)

@@ -54,8 +54,10 @@ def api_kwargs(plan: Plan, source: Source | None) -> dict[str, Any]:
     if plan.auth and plan.auth.type == "browser":
         kwargs["auth"] = {"type": "browser"}
     elif plan.auth:
-        kwargs["auth"] = {"type": plan.auth.type, "env": auth_env(plan)} | (
-            {"param": plan.auth.param} if plan.auth.param else {}
+        kwargs["auth"] = (
+            {"type": plan.auth.type, "env": auth_env(plan)}
+            | ({"param": plan.auth.param} if plan.auth.param else {})
+            | ({"provider": plan.auth.provider} if plan.auth.provider else {})
         )
     return kwargs | {"impersonate": plan.impersonate, "concurrency": plan.concurrency, "cache_ttl": plan.cache_ttl}
 

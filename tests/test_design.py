@@ -235,6 +235,26 @@ def test_session_cookie_validation():
     assert any("only applies to browser" in e.message for e in _errors(plan))
 
 
+def test_signin_auth_validation():
+    plan = valid_plan()
+    plan.auth = AuthScheme(name="s", type="signin", env=f"{plan.env_prefix}_SESSION")
+    assert any("needs a provider" in e.message for e in _errors(plan))
+    plan.auth.provider = "xiaomi"
+    assert not _errors(plan)
+    plan.tools[0].name = f"{plan.prefix}_login"
+    assert any("sign-in tool" in e.message for e in _errors(plan))
+    plan.auth = AuthScheme(name="t", type="bearer", env="EX_MCP_TOKEN", provider="xiaomi")
+    assert any("provider only applies" in e.message for e in _errors(plan))
+
+
+def test_hub_only_tools_in_instructions_warn():
+    plan = valid_plan()
+    plan.instructions += "\nIf signed out, call smith_login(connection='x')."
+    plan.auth = AuthScheme(name="s", type="signin", provider="xiaomi", env="EX_MCP_SESSION")
+    warning = next(i for i in validate(plan) if "smith_login" in i.message)
+    assert warning.level == "warning" and f"{plan.prefix}_login" in warning.message
+
+
 def test_plan_schema_and_new_fields():
     assert "transform" in Plan.model_json_schema()["$defs"]["ToolArg"]["properties"]
     plan = valid_plan()

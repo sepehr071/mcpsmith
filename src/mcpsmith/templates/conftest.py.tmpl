@@ -10,6 +10,7 @@ from __PACKAGE__.server import api, mcp
 
 FIXTURES = Path(__file__).parent / "fixtures"
 AUTH_ENV = __AUTH_ENV__
+SIGNIN = __SIGNIN__  # sign-in provider, or None
 
 
 @pytest.fixture
@@ -33,6 +34,12 @@ def replay(monkeypatch):
 
     def use(name: str) -> None:
         body = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+        if SIGNIN:  # the provider signs each request and may encrypt the answer
+            from mcpsmith.runtime import signin
+
+            monkeypatch.setenv(AUTH_ENV, signin.test_session(SIGNIN))
+            api.set_transport(httpx.MockTransport(lambda request: signin.fake_reply(SIGNIN, request, body)))
+            return
         api.set_transport(httpx.MockTransport(lambda request: httpx.Response(200, json=body)))
         if AUTH_ENV and not os.environ.get(AUTH_ENV):
             monkeypatch.setenv(AUTH_ENV, "test")

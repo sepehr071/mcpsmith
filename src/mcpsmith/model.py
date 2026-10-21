@@ -23,7 +23,7 @@ from .runtime import transforms
 
 ParamIn = Literal["path", "query", "header", "cookie", "body"]
 ArgType = Literal["string", "integer", "number", "boolean", "array", "object"]
-AuthType = Literal["bearer", "header", "query", "cookie", "basic", "browser"]
+AuthType = Literal["bearer", "header", "query", "cookie", "basic", "browser", "signin"]
 
 # Every pattern is used with fullmatch: `$` would accept a trailing newline.
 PLAN_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
@@ -153,6 +153,9 @@ class AuthScheme(BaseModel):
     session_cookie: str = Field(
         "",
         description="Browser auth: name of the cookie that proves the user is logged in; absent means session ended.",
+    )
+    provider: str = Field(
+        "", description="Sign-in auth: the provider that signs the user in and signs each request, e.g. 'xiaomi'."
     )
 
     @field_validator("env")

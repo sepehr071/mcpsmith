@@ -89,7 +89,12 @@ Raw API responses waste the agent's context and bury the answer. For every tool:
 
 Plan: `name` (e.g. `petstore-mcp`), `title`, `description` (<= 100 chars), `instructions`, `prefix` (tool name
 prefix, e.g. `pet`), `version`, `base_url`, `env_prefix` (upper case, `^[A-Z][A-Z0-9_]*$`, ending in `_MCP`; `auth.env` must start with it; e.g.
-`PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic|browser, param, env, login_path, session_cookie}`;
+`PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic|browser|signin, param, env, login_path, session_cookie, provider}`;
+`signin` is for apps that sign their own requests: `provider` (now: `xiaomi`, Mi Home cloud, `base_url`
+`https://<region>.api.io.mi.com/app`, POST, the body is the `data` JSON) signs every call; the user signs in on the
+provider's own page through a link from `smith_login(connection)` in the hub, or from the `<prefix>_login` tool that
+exported servers get; calling it again reports the account and where its data is. Don't name `smith_*` tools in
+`instructions`: exported servers don't have them;
 `browser` and `login_path` only work in the hub, not in exported servers: `browser` reuses the developer's
 logged-in shared Chrome session, `login_path` is the path prefix the site redirects to when logged out, e.g.
 `/login`; `session_cookie` is the name of the cookie that proves the login (some sites answer an ended session with

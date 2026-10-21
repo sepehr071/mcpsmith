@@ -54,7 +54,7 @@ Numbers are from runs on 2026-10-21 with mcpsmith 0.4.0. Reproduce the first two
 No API key needed: your coding agent is the designer.
 
 - Skills (plain Markdown, any agent can read them): [`skills/build-mcp-server`](skills/build-mcp-server/SKILL.md) (the whole workflow), [`skills/extract-api`](skills/extract-api/SKILL.md) (logged-in sites into live tools), [`skills/design-mcp-tools`](skills/design-mcp-tools/SKILL.md) (design checklist). [`AGENTS.md`](AGENTS.md) points Codex, Cursor and Gemini CLI at them.
-- MCP tools (paths absolute): `smith_guide`, `smith_inspect`, `smith_app_android`, `smith_app_js`, `smith_app_desktop`, `smith_probe`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check`, and for the hub `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_tools`, `smith_call`.
+- MCP tools (paths absolute): `smith_guide`, `smith_inspect`, `smith_app_android`, `smith_app_js`, `smith_app_desktop`, `smith_probe`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check`, `smith_install`, and for the hub `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_login`, `smith_tools`, `smith_call`.
 - MCP config, any client:
   ```json
   {"mcpServers": {"mcpsmith": {"command": "uvx", "args": ["mcpsmith", "mcp"]}}}
@@ -103,23 +103,27 @@ A HAR holds everything the browser sent and received, including cookies and your
 Only for software you own or are authorized to analyze.
 
 - Desktop program: `mcpsmith app-desktop` prints the steps to record its traffic with your own mitmproxy (`mitmdump --set hardump=capture.har`); `mcpsmith app-desktop capture.har --host api.example.com` imports the result. mcpsmith runs nothing for you, and certificate-pinned programs are out of scope.
-- Android app: `mcpsmith app-android app.apk --base-url https://api.example.com` reads the app's Retrofit interface (needs REA's JADX jar, `REA_JADX_MCP_JAR`). Without `--class` it lists candidate classes.
+- Android app: `mcpsmith app-android app.apk --base-url https://api.example.com` reads the app's Retrofit interface. It needs a decompiler: the free [`jadx`](https://github.com/skylot/jadx/releases) CLI on PATH (`scoop install extras/jadx`, `brew install jadx`), or REA's JADX jar (`REA_JADX_MCP_JAR`). Without `--class` it lists candidate classes. An app with no declared interface gets an error with the next step: record its traffic instead, or, when it recognizes the app's request-signing SDK, the sign-in provider to use.
+- App that signs its own requests: plans use `auth: {type: signin, provider: xiaomi}` (Mi Home cloud is the first provider). The user signs in on the provider's own page through a link from the server's `<prefix>_login` tool (`smith_login` in the hub); the session goes to the OS keychain. Calling the login tool again names the account and where its data is, which catches a wrong account or region.
 - Electron/JavaScript app: `mcpsmith app-js <dir|app.asar|file> --base-url ...` reads the calls in its shipped code.
 
 Neither `app-android` nor `app-js` runs the app. The endpoints are unverified (no example response) until `mcpsmith probe` calls the GET ones live with your credentials (`--writes` for the rest, only after you agree). A method that cannot be read stays empty and `validate` refuses it.
 
 ## Setup
 
-`uvx mcpsmith setup` registers the `mcpsmith` and `mcpsmith-chrome` (Chrome DevTools) MCP servers, copies the skills into each coding agent it finds (Claude Code, Codex, Cursor, Gemini CLI), and installs REA (`rea-agents`) for them. Options:
+`uvx mcpsmith setup` registers the `mcpsmith` and `mcpsmith-chrome` (Chrome DevTools) MCP servers, and copies the skills into each coding agent it finds (Claude Code, Codex, Cursor, Gemini CLI). Options:
 
 - `--dry-run` prints the plan and writes nothing.
 - `--agents claude,codex` limits it to those agents (default: the ones found).
-- `--no-rea` skips REA; `--no-skills` skips the skills; `--yes` skips the confirmation.
+- `--rea` also installs REA (`rea-agents`). It is off by default: its MCP server adds about 200 tools to each agent, and mcpsmith's app path needs only plain tools such as `jadx`.
+- `--no-skills` skips the skills; `--yes` skips the confirmation.
 - `--remove` undoes what setup did. Entries and skill folders you made yourself are left alone. REA stays installed (you may have had it before); the command prints the line that removes it.
 
 Before setup first changes a config file, it copies the file to `*.mcpsmith.bak`. The backup is made once and not refreshed by later runs. Restart your agents afterwards. Run `mcpsmith browser` before using Chrome DevTools: it starts the shared Chrome the server connects to.
 
-Claude Code plugin users already get all three servers from the plugin and do not need `setup`.
+Claude Code plugin users already get both servers from the plugin and do not need `setup`.
+
+`mcpsmith install <project>` registers a server made by `generate` with the same agents, the same way: it runs the project folder (`uv run --directory`), or the released package with `--pypi`. It touches only the entry named after the plan and refuses one of that name that runs something else unless `--force`. `--remove` takes it out again.
 
 <p align="center"><img src="docs/assets/screenshot-setup.png" alt="mcpsmith setup --dry-run plan" width="100%"></p>
 <p align="center"><em><code>mcpsmith setup --dry-run</code> prints what it would change and writes nothing.</em></p>
@@ -144,7 +148,7 @@ uvx mcpsmith validate
 uvx mcpsmith generate -o petstore-mcp
 cd petstore-mcp && uv run pytest
 uvx mcpsmith check .                                                    # call every tool live
-claude mcp add petstore-mcp -- uv run --directory "$PWD" petstore-mcp
+uvx mcpsmith install .                                                  # register it with your agents
 ```
 
 A spec read from a local file may only have a relative server URL; `validate` then asks you to set an absolute `base_url` in the plan.

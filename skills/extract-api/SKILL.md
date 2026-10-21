@@ -87,4 +87,5 @@ Same rules. Call `smith_app_js(path=<app dir, app.asar or one file>, base_url=<A
 - Connections keep only scrubbed examples, not captured response bodies. Delete the HAR once `smith_connect` works.
 - Static secrets (API key, token) are entered by the developer: `mcpsmith secret set <connection> <ENV_NAME>` (hidden prompt, OS keychain; `--once` for a one-time code). Never ask for them in chat or write them into a plan.
 - `mcpsmith connections` / `smith_connections` lists what is saved; `smith_disconnect(name)` removes one.
+- A tool says "Not signed in" or the session expired: `smith_login(connection)` returns the step or link to show the user (an app that signs its own requests uses `auth: {type: signin, provider: ...}`, e.g. `xiaomi` for Mi Home). Call it again after the user signs in: it names the account and where its data is, which catches a wrong account or region.
 - To share a server publicly use `generate` (see `build-mcp-server`). It refuses `auth: browser` plans: switch the plan to token/API-key auth first. Secrets are never exported.

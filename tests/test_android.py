@@ -188,6 +188,11 @@ def test_absolute_url_userinfo_is_stripped():
 # ---------- JADX driver ----------
 
 
+@pytest.fixture(autouse=True)
+def no_jadx_cli(monkeypatch):
+    monkeypatch.setattr(jadx, "_jadx_cli", lambda: None)  # the jar path, whatever this machine has on PATH
+
+
 def fake_jadx(monkeypatch, handler):
     @contextlib.asynccontextmanager
     async def session(apk, jar):
@@ -221,6 +226,20 @@ def test_search_pages_through_every_result(monkeypatch, apk):
     assert seen[:3] == [(0, jadx.MAX_SCAN), (2, jadx.MAX_SCAN), (4, jadx.MAX_SCAN)]
 
 
+def test_no_candidates_is_a_dead_end_that_names_a_known_signer(monkeypatch, apk):
+    def handler(tool, args):
+        hit = args["search_term"] == "SmartHomeRc4"
+        return json.dumps({"items": [{"fqn": "x.Y"}] if hit else [], "max_scan_reached": False})
+
+    fake_jadx(monkeypatch, handler)
+    with pytest.raises(RuntimeError, match="signs its requests itself.*provider: xiaomi"):
+        jadx.find_api_classes(apk)
+    fake_jadx(monkeypatch, lambda t, a: json.dumps({"items": [], "max_scan_reached": False}))
+    with pytest.raises(RuntimeError, match="mcpsmith browser") as e:
+        jadx.find_api_classes(apk)
+    assert "signin" not in str(e.value)
+
+
 def test_search_that_hit_the_scan_cap_is_an_error(monkeypatch, apk):
     fake_jadx(monkeypatch, lambda t, a: json.dumps({"items": [], "scanned": 5000, "max_scan_reached": True}))
     with pytest.raises(RuntimeError, match="5000"):
@@ -251,7 +270,7 @@ def test_bad_class_name_and_missing_apk(monkeypatch, apk, tmp_path):
 
 def test_missing_jar_and_java_say_what_to_do(monkeypatch, apk, tmp_path):
     monkeypatch.delenv("REA_JADX_MCP_JAR", raising=False)
-    with pytest.raises(RuntimeError, match="rea-agents setup.*--jadx-jar"):
+    with pytest.raises(RuntimeError, match="jadx/releases.*rea-agents setup.*--jadx-jar"):
         jadx.class_source(apk, "a.B")
     jar = tmp_path / "j.jar"
     jar.write_bytes(b"x")
@@ -265,7 +284,7 @@ def test_missing_jar_and_java_say_what_to_do(monkeypatch, apk, tmp_path):
 
 
 def test_cli_lists_candidates_then_writes_source(apk, tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(jadx, "find_api_classes", lambda a, j=None: ["com.x.Api"])
+    monkeypatch.setattr(jadx, "api_classes_and_signer", lambda a, j=None: (["com.x.Api"], None))
     monkeypatch.setattr(jadx, "class_source", lambda a, c, j=None: FIXTURE.read_text(encoding="utf-8"))
     monkeypatch.setattr(jadx, "builder_annotations", lambda a, j=None: MAPPING)
     wd = str(tmp_path / "wd")
