@@ -689,13 +689,14 @@ wheels = [
 
 [[package]]
 name = "mcpsmith"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "keyring" },
     { name = "mcp" },
     { name = "pyyaml" },
+    { name = "truststore" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "websockets", version = "17.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
@@ -726,6 +727,7 @@ requires-dist = [
     { name = "mcp", specifier = ">=2.2,<3" },
     { name = "playwright", marker = "extra == 'capture'", specifier = ">=1.45" },
     { name = "pyyaml", specifier = ">=6" },
+    { name = "truststore", specifier = ">=0.9" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = ">=2024.1" },
     { name = "websockets", specifier = ">=12" },
 ]
