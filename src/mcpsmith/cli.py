@@ -34,6 +34,104 @@ def inspect_source(source: str, workdir: Path, hosts: list[str] | None, budget: 
     return src, source_path, digest_path, text
 
 
+def app_android(
+    apk: Path | None,
+    class_name: str | None,
+    base_url: str,
+    workdir: Path,
+    jar: str | None = None,
+    source_file: Path | None = None,
+) -> tuple[list[str], Source | None, str]:
+    """Without a class or source file: candidate API classes. Otherwise write source.json + digest.md.
+
+    The interface text comes from `source_file` (decompiled by any tool) or from the APK via the JADX jar. Returns
+    (candidates, source, digest).
+    """
+    from .design import digest
+    from .importers import android, jadx
+
+    if source_file:
+        java = source_file.read_text(encoding="utf-8-sig")
+    elif apk is None:
+        raise ValueError("give an APK path, or --source FILE with an already decompiled class")
+    elif not class_name:
+        return jadx.find_api_classes(apk, jar), None, ""
+    else:
+        java = jadx.class_source(apk, class_name, jar)
+    src = android.parse_interface(java, base_url)
+    if apk and (not src.endpoints or any(e.method == "" for e in src.endpoints)):
+        # release builds rename the annotations: the app's own Retrofit request builder names them again
+        if mapping := jadx.builder_annotations(apk, jar):
+            src = android.parse_interface(java, base_url, annotations=mapping)
+    if not src.endpoints:
+        raise ValueError(f"no endpoints found: {src.description}")
+    workdir.mkdir(parents=True, exist_ok=True)
+    save_source(src, workdir / "source.json")
+    text = digest(src)
+    (workdir / "digest.md").write_text(text, encoding="utf-8", newline="\n")
+    return [], src, text
+
+
+def app_js(path: Path, base_url: str, workdir: Path) -> tuple[Source, str]:
+    """Read an app's own JavaScript (directory, .asar or file) into unverified endpoints; write source.json + digest.md."""
+    from .design import digest
+    from .importers import electron
+
+    notes: list[str] = []
+    src = electron.parse_sources(electron.read_app(path, notes), base_url)
+    src.description = "\n".join(filter(None, [*notes, src.description]))
+    if not src.endpoints:
+        raise ValueError(f"no endpoints found: {src.description}")
+    workdir.mkdir(parents=True, exist_ok=True)
+    save_source(src, workdir / "source.json")
+    text = digest(src)
+    (workdir / "digest.md").write_text(text, encoding="utf-8", newline="\n")
+    return src, text
+
+
+def desktop_steps(workdir: Path, port: int) -> list[str]:
+    """The commands the developer runs themselves; mcpsmith starts and changes nothing."""
+    proxy = f"http://127.0.0.1:{port}"
+    return [
+        "Only for a program you own or are authorized to analyze. Programs that use certificate pinning are out of scope.",
+        f"Install mitmproxy yourself (https://mitmproxy.org), then run: mitmdump --set hardump={workdir / 'capture.har'} -p {port}",
+        f"Point that one program at {proxy}: its own proxy setting, or start it with HTTPS_PROXY={proxy} "
+        f"(Windows cmd: set HTTPS_PROXY={proxy}; PowerShell: $env:HTTPS_PROXY='{proxy}'; macOS/Linux: HTTPS_PROXY={proxy} ./program). "
+        "Do not change the system-wide proxy.",
+        "For HTTPS to be captured, the program must trust mitmproxy's CA certificate: follow mitmproxy's own docs, https://docs.mitmproxy.org/stable/concepts-certificates/.",
+        "Use each feature you want as a tool in the program. Anything you do not use is not in the capture. "
+        "Narrow to the program's API host at import with --host; that is the reliable way.",
+        "Stop mitmdump with Ctrl+C (in mitmweb, quit from the UI). Do not kill the process: hardump writes the HAR only on a clean exit, "
+        "and a killed mitmdump leaves no file. Then run: mcpsmith app-desktop " + str(workdir / "capture.har"),
+        "Safer alternative to the hardump run above: record with "
+        f"mitmdump -p {port} -w {workdir / 'flows.mitm'} (flows are written as they arrive), stop it, then convert without any proxying: "
+        f"mitmdump -nr {workdir / 'flows.mitm'} --set hardump={workdir / 'capture.har'} (it exits by itself and writes the HAR).",
+    ]
+
+
+def app_desktop(
+    har: Path | None, workdir: Path, hosts: list[str] | None, port: int, force: bool
+) -> tuple[list[str], Source | None, str]:
+    """Without a HAR: the steps for recording. With one: import it through `inspect_source`."""
+    from .importers import load
+
+    if har is None:
+        return desktop_steps(workdir, port), None, ""
+    if (workdir / "source.json").exists() and not force:
+        raise ValueError(f"{workdir / 'source.json'} already exists (use --force to overwrite it)")
+    if not load(str(har), hosts=hosts or None).endpoints:
+        raise ValueError(
+            "nothing to import: the capture has no JSON API calls"
+            + (
+                f" to {', '.join(hosts)}"
+                if hosts
+                else " (only proxy CONNECT entries, static files or non-JSON traffic)"
+            )
+        )
+    src, _, _, text = inspect_source(str(har), workdir, hosts, 60000)
+    return [], src, text
+
+
 def load_workdir_source(workdir: Path) -> Source | None:
     path = workdir / "source.json"
     return load_source(path) if path.exists() else None
@@ -156,6 +254,67 @@ def cmd_check(args) -> int:
         else:
             print(f"FAIL {r.tool}  {r.error}")
     return 0 if all(r.ok for r in results) else 1
+
+
+def cmd_probe(args) -> int:
+    from .probe import run
+
+    workdir = Path(args.workdir)
+    source = load_workdir_source(workdir)
+    if source is None:
+        raise ValueError(f"{workdir / 'source.json'} not found; run `mcpsmith inspect` first")
+    results = run(source, writes=args.writes, limit=args.limit)
+    save_source(source, workdir / "source.json")
+    for r in results:
+        if r.skipped_reason:
+            print(f"SKIP {r.endpoint}  {r.skipped_reason}")
+        elif r.ok:
+            print(f"OK   {r.endpoint}  {r.chars} chars")
+        else:
+            print(f"FAIL {r.endpoint}  {r.error}")
+    tried = [r for r in results if not r.skipped_reason]
+    return 1 if tried and not any(r.ok for r in tried) else 0
+
+
+def cmd_app_android(args) -> int:
+    classes, src, _ = app_android(
+        Path(args.apk) if args.apk else None,
+        args.cls,
+        args.base_url,
+        Path(args.workdir),
+        args.jadx_jar,
+        Path(args.source) if args.source else None,
+    )
+    if src is None:
+        print("\n".join(classes) or "(no candidate classes found)")
+        print(f"next: mcpsmith app-android {args.apk} --class NAME --base-url URL{_flags(args)}")
+        return 0
+    print(f"{src.title}: {len(src.endpoints)} endpoints, all unverified")
+    if src.description:
+        print(src.description)
+    print(f"wrote {Path(args.workdir) / 'source.json'}\nnext: mcpsmith probe{_flags(args)}")
+    return 0
+
+
+def cmd_app_js(args) -> int:
+    src, _ = app_js(Path(args.path), args.base_url, Path(args.workdir))
+    print(f"{src.title}: {len(src.endpoints)} endpoints, all unverified")
+    if src.description:
+        print(src.description)
+    print(f"wrote {Path(args.workdir) / 'source.json'}\nnext: mcpsmith probe{_flags(args)}")
+    return 0
+
+
+def cmd_app_desktop(args) -> int:
+    steps, src, _ = app_desktop(
+        Path(args.har) if args.har else None, Path(args.workdir), args.host, args.port, args.force
+    )
+    if src is None:
+        print("\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)))
+        return 0
+    print(f"{src.title}: {len(src.endpoints)} endpoints, from the recorded traffic")
+    print(f"wrote {Path(args.workdir) / 'source.json'}\nnext: mcpsmith draft{_flags(args)}")
+    return 0
 
 
 def cmd_guide(args) -> int:
@@ -285,6 +444,41 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--writes", action="store_true", help="also call tools that change data (read_only: false)")
+
+    sp = command(
+        "probe", cmd_probe, "call unverified GET endpoints live to capture example responses; exit 1 if all fail"
+    )
+    sp.add_argument("--limit", type=int, default=20, help="most endpoints to probe (default 20)")
+    sp.add_argument("--writes", action="store_true", help="also probe non-GET endpoints (may change data)")
+
+    sp = command(
+        "app-android",
+        cmd_app_android,
+        "read an Android app's HTTP interface (via REA's JADX jar) into unverified endpoints; your own or an authorized app",
+    )
+    sp.add_argument("apk", nargs="?", help="path of the APK (never downloaded for you)")
+    sp.add_argument("--class", dest="cls", help="decompiled Retrofit interface class; omit to list candidates")
+    sp.add_argument("--source", help="a class already decompiled by any tool (.java file); skips the jar")
+    sp.add_argument("--jadx-jar", help="REA's JADX MCP jar (default: $REA_JADX_MCP_JAR, set by `npx rea-agents setup`)")
+    sp.add_argument("--base-url", default="", help="the app's API base URL, e.g. https://api.example.com")
+
+    sp = command(
+        "app-js",
+        cmd_app_js,
+        "read an Electron/JavaScript app's own HTTP calls (directory, .asar, .js or .map) into unverified endpoints; your own or an authorized app",
+    )
+    sp.add_argument("path", help="app directory, app.asar, or one .js/.ts/.map file (never downloaded for you)")
+    sp.add_argument("--base-url", default="", help="the app's API base URL, e.g. https://api.example.com")
+
+    sp = command(
+        "app-desktop",
+        cmd_app_desktop,
+        "print the steps to record a desktop program's traffic with your own mitmproxy, or import the HAR it wrote; your own or an authorized program",
+    )
+    sp.add_argument("har", nargs="?", help="the HAR mitmdump wrote; omit to print the steps")
+    sp.add_argument("--port", type=int, default=8080, help="proxy port in the printed steps (default 8080)")
+    sp.add_argument("--host", action="append", help="keep only traffic to this host (repeatable)")
+    sp.add_argument("--force", action="store_true", help="overwrite an existing source.json")
 
     sp = command("secret", cmd_secret, "store a connection's credentials in the OS keychain", workdir=False)
     sp.add_argument("action", choices=["set", "list", "delete"])

@@ -50,6 +50,10 @@ mcpsmith draft --name example-mcp
 
 While recording, do each thing you want as a tool: search, open a detail page, paginate, apply a filter. Anything you do not click is not in the capture. `--host` (repeatable) keeps only the hosts you list. A DevTools "Save all as HAR" export works in place of `capture`. The recording browser uses `HTTPS_PROXY` when it is set.
 
+A desktop program you own or are authorized to analyze: `mcpsmith app-desktop` prints the steps to record its traffic with your own mitmproxy (`mitmdump --set hardump=capture.har`); `mcpsmith app-desktop capture.har --host api.example.com` imports the result. mcpsmith runs nothing for you, and certificate-pinned programs are out of scope.
+
+An Android app or an Electron/JavaScript app you own or are authorized to analyze: `mcpsmith app-android app.apk --base-url https://api.example.com` reads the app's Retrofit interface (needs REA's JADX jar, `REA_JADX_MCP_JAR`), and `mcpsmith app-js <dir|app.asar|file> --base-url ...` reads the calls in its shipped code. Neither runs the app. The endpoints are unverified (no example response) until `mcpsmith probe` calls the GET ones live with your credentials (`--writes` for the rest, only after you agree); a method that cannot be read stays empty and `validate` refuses it.
+
 A HAR holds everything the browser sent and received, including cookies and your personal data: keep it out of git and delete it after `inspect`. `inspect` scrubs what it keeps: an API key or token becomes an `auth` env var with its value dropped, other secret-looking headers and query params are dropped, and emails, phone numbers, JWTs and values under secret or personal field names are masked in examples and test fixtures. This is pattern-based, so read `tests/fixtures/` before you publish a generated server. If a key is a public one the site sends to every visitor (a search or maps key), you may put it in the tool's `fixed` values.
 
 ## Use it from your agent
@@ -61,7 +65,7 @@ No API key needed: your coding agent is the designer.
   ```json
   {"mcpServers": {"mcpsmith": {"command": "uvx", "args": ["mcpsmith", "mcp"]}}}
   ```
-  Tools: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check` (paths absolute), and for the hub `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_tools`, `smith_call`.
+  Tools: `smith_guide`, `smith_inspect`, `smith_app_android`, `smith_app_js`, `smith_app_desktop`, `smith_probe`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check` (paths absolute), and for the hub `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_tools`, `smith_call`.
   MCP clients start servers without your shell's proxy variables; behind a proxy, add `"env": {"HTTPS_PROXY": "http://127.0.0.1:8080"}` so `smith_inspect` can fetch specs.
 - Skills: `skills/build-mcp-server` (the whole workflow), `skills/extract-api` (logged-in sites into live tools) and `skills/design-mcp-tools` (design checklist). `AGENTS.md` points other agents (Codex, Cursor, Gemini CLI) at them.
 

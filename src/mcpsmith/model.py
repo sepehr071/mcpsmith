@@ -176,10 +176,11 @@ class Endpoint(BaseModel):
     response_example: Any = Field(None, description="A real (captured) or synthesized response body, trimmed.")
     auth: list[str] = Field([], description="AuthScheme names this endpoint needs.")
     count: int = Field(1, description="How often it was seen in captured traffic (1 for OpenAPI).")
+    verified: bool = Field(True, description="False: read from the app's code, not yet seen answering (see probe).")
 
 
 class Source(BaseModel):
-    kind: Literal["openapi", "har"]
+    kind: Literal["openapi", "har", "app"]
     title: str
     description: str = ""
     base_url: str

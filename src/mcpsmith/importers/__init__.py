@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import yaml
 
-from mcpsmith.importers import har, openapi, rea
+from mcpsmith.importers import android, electron, har, openapi, rea  # noqa: F401  (android, electron: see app-android, app-js)
 from mcpsmith.model import Source
 from mcpsmith.runtime.http import tls_context
 

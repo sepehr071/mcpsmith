@@ -26,6 +26,10 @@ def endpoint_of(t: Tool, plan: Plan, source: Source | None) -> tuple[str, str]:
     if ep:
         base = ep.base_url.rstrip("/")
         url = f"{base}{ep.path}" if base and base != plan.base_url.rstrip("/") else ep.path
+        if not ep.method:
+            raise ValueError(
+                f"Tool {t.name}: endpoint {ep.id!r} has no HTTP method (it could not be read from the app); set the method in the plan or source."
+            )
         return ep.method.upper(), url
     m = re.fullmatch(r"([A-Za-z]+)\s+(\S+)", t.endpoint.strip())
     if not m:

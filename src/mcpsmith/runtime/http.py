@@ -35,9 +35,10 @@ IDEMPOTENT = {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
 class ApiError(ToolError):
     """A failed upstream call. `status` is the HTTP status, or None for network errors."""
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, expired: bool = False):
         super().__init__(message)
         self.status = status
+        self.expired = expired  # the login session ended; every further call would fail the same way
 
 
 @functools.cache
@@ -157,7 +158,7 @@ class Api:
                         "The mcpsmith Chrome is not running. Start it with `mcpsmith browser`, log in, then retry."
                     ) from None
                 if self.session_cookie and self.session_cookie not in jar:
-                    raise ApiError(self._expired_message(host))
+                    raise ApiError(self._expired_message(host), expired=True)
                 cookies.update(jar)
                 sent = True
         if any(re.search(r"[;\r\n]", str(v)) for v in cookies.values()) or any(
@@ -191,7 +192,7 @@ class Api:
             break
 
         if self.auth and self.auth["type"] == "browser" and sent and self._expired(r):
-            raise ApiError(self._expired_message(host))
+            raise ApiError(self._expired_message(host), expired=True)
         if r.status_code >= 300:
             raise ApiError(self._status_message(r, content, host, sent), r.status_code)
         if not content:

@@ -392,6 +392,21 @@ def _is_credential(name: str) -> bool:
     return _is_secret(name) and not NOT_AUTH.intersection(_parts(name))
 
 
+_LITERAL = re.compile(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|`[^`]*`")
+_KEY_VALUE = re.compile(r"([\w-]+)\s*([=:])\s*[^\s&,;)\]}]+")
+
+
+def note_text(s: str, limit: int = 60) -> str:
+    """App source quoted in a note: string literals blanked and secret-looking `key=value` masked, then cut."""
+    s = _LITERAL.sub('"…"', " ".join(s.split()))
+    s = _KEY_VALUE.sub(lambda m: f"{m[1]}{m[2]}<redacted>" if _is_secret(m[1]) else m[0], s)
+    return s[:limit]
+
+
+def cap_notes(notes: list[str], limit: int = 200) -> list[str]:
+    return notes if len(notes) <= limit else [*notes[:limit], f"… {len(notes) - limit} more"]
+
+
 def _scrub(data: Any, name: str = "") -> Any:
     """Copy of `data` with secrets and personal values replaced; ordinary ids, titles and prices stay."""
     if data is None:

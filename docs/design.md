@@ -60,6 +60,9 @@ openapi.yaml | site.har ──inspect──▶ .mcpsmith/source.json + digest.md
 
 `mcpsmith capture <url> -o site.har` opens a browser (Playwright, optional extra) and saves the session.
 A HAR exported from browser DevTools works the same.
+`mcpsmith app-desktop` is the same path for a desktop program: it prints the steps for the developer's own
+mitmproxy (`mitmdump --set hardump=<file>`), then imports the HAR through `inspect_source`. It never installs,
+starts or configures a proxy or certificate; certificate-pinned programs are out of scope.
 
 ## Data model
 
