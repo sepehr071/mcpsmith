@@ -149,6 +149,42 @@ def test_parse_with_mapping_gives_real_methods_and_no_minified_notes():
     assert ep(src, "minifiedHttp").method == "PURGE"
 
 
+def test_overloads_and_same_named_minified_methods_get_unique_ids():
+    java = """
+    interface Api {
+        @GET("api/items") Call<A> list(@Query("a") String a);
+        @GET("api/items") Call<A> list(@Query("b") String b);
+        @q("api/x") Call<A> m();
+        @q("api/y") Call<A> m();
+    }
+    """
+    s = android.parse_interface(java)
+    ids = [e.id for e in s.endpoints]
+    assert len(ids) == 4 and len(set(ids)) == 4
+    assert [s.endpoint(i).params[0].name for i in ids[:2]] == ["a", "b"]
+    assert [s.endpoint(i).path for i in ids[2:]] == ["/api/x", "/api/y"]
+
+
+def test_dropped_methods_leave_a_note():
+    java = """
+    interface Api {
+        @GET("api/ok") Call<A> ok();
+        @Foo("not a path!") Call<A> odd();
+        @GET("api/broken" Call<A> broken(;
+    }
+    """
+    s = android.parse_interface(java)
+    assert [e.summary for e in s.endpoints] == ["ok"]
+    assert "skipped odd" in s.description and "skipped" in s.description.splitlines()[-1]
+    assert len(s.description.splitlines()) == 2
+
+
+def test_absolute_url_userinfo_is_stripped():
+    s = android.parse_interface('interface Api { @GET("https://u:p@h.test:8443/x?y=1") Call<A> f(); }')
+    e = s.endpoints[0]
+    assert e.base_url == "https://h.test:8443" and e.path == "/x" and "u:p" not in s.model_dump_json()
+
+
 # ---------- JADX driver ----------
 
 

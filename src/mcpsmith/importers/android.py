@@ -42,7 +42,12 @@ def parse_interface(
     notes: list[str] = []
     found: list[Endpoint] = []
     for stmt in _split(text, ";", nest=False):
-        if (parsed := _statement(stmt)) is None:
+        try:
+            parsed = _statement(stmt)
+        except _Skip as e:
+            notes.append(f"skipped {' '.join(stmt.split())[:60]!r}: {e}")
+            continue
+        if parsed is None:
             continue
         name, anns, params = parsed
         try:
@@ -59,6 +64,11 @@ def parse_interface(
     keys = [f"{e.method} {e.path}" for e in found]
     for e, key in zip(found, keys, strict=True):
         e.id = e.summary if e.method == "" or keys.count(key) > 1 else key
+    seen: Counter[str] = Counter()
+    for e in found:  # overloads and same-named minified methods must not share an id
+        seen[e.id] += 1
+        if seen[e.id] > 1:
+            e.id = f"{e.id}-{seen[e.id]}"
     iface = re.search(r"\binterface\s+(\w+)", text)
     return Source(
         kind="app",
@@ -141,17 +151,14 @@ def _annotations(s: str) -> tuple[list[tuple[str, str]], str]:
 def _statement(stmt: str) -> tuple[str, list[tuple[str, str]], list[str]] | None:
     """(method name, its annotations, raw parameters) of an annotated interface method, else None."""
     s = stmt[_last_open_brace(stmt) + 1 :].strip().strip("}").strip()
-    try:
-        annotations, rest = _annotations(s)
-        if not annotations or "(" not in rest:
-            return None
-        open_ = rest.index("(")
-        head = rest[:open_].split()
-        if len(head) < 2 or not re.fullmatch(r"\w+", head[-1]):
-            return None
-        inner = rest[open_ + 1 : _balanced(rest, open_) - 1]
-    except _Skip:
+    annotations, rest = _annotations(s)
+    if not annotations or "(" not in rest:
         return None
+    open_ = rest.index("(")
+    head = rest[:open_].split()
+    if len(head) < 2 or not re.fullmatch(r"\w+", head[-1]):
+        raise _Skip("declaration not understood")
+    inner = rest[open_ + 1 : _balanced(rest, open_) - 1]
     return head[-1], annotations, [p for p in _split(inner, ",") if p.strip()]
 
 
@@ -201,6 +208,7 @@ def _endpoint(
 ):
     method, path, has_body, encoding, headers, unresolved = None, None, False, "", [], []
     guessed: list[tuple[str, str]] = []
+    odd: list[str] = []
     for an, raw in annotations:
         an = names.get(an, an)
         args = _args(raw)
@@ -221,10 +229,15 @@ def _endpoint(
         elif an == "Headers":
             headers += [h for a in _split(raw.strip().strip("{}"), ",") if (h := _literal(a)) is not None]
         elif an not in IGNORED and len(args) == 1 and args[0][0] is None:
-            if (p := _literal(args[0][1])) is not None and PATH_LIKE.fullmatch(p):
-                guessed.append((an, p))
+            if (p := _literal(args[0][1])) is not None:
+                if PATH_LIKE.fullmatch(p):
+                    guessed.append((an, p))
+                else:
+                    odd.append(an)
     if method is None and path is None:
         if len(guessed) == 0:
+            if odd:
+                raise _Skip(f"annotation @{odd[0]} holds a string that is not a path")
             return None  # not an HTTP method
         if len(guessed) > 1:
             raise _Skip("several unnamed string annotations; cannot tell which is the request line")
@@ -233,7 +246,7 @@ def _endpoint(
     base = ""
     if path.startswith(("http://", "https://")):
         u = urlsplit(path)
-        base, path = f"{u.scheme}://{u.netloc}", u.path + (f"?{u.query}" if u.query else "")
+        base, path = f"{u.scheme}://{u.netloc.rpartition('@')[2]}", u.path + (f"?{u.query}" if u.query else "")
     path, _, fixed = path.partition("?")
     placeholders = set(re.findall(r"\{(\w+)\}", path))
 
@@ -391,6 +404,8 @@ def resolve_annotations(builder_java: str) -> dict[str, str]:
             meaning = verb
         else:
             continue
+        # shortcut: keyed on the simple class name, so same-named annotations in two minified packages conflate;
+        # carry the package through `_annotations` to fix.
         out.setdefault(cls.rsplit(".", 1)[-1], meaning)
     # Blocks that name nothing: @Path's block checks a flag per earlier parameter kind and names it in the message
     # ("... must not come after a @Query"); the block that sets that flag is that kind. @Header is the parameter
