@@ -98,11 +98,14 @@ def desktop_steps(workdir: Path, port: int) -> list[str]:
         f"Point that one program at {proxy}: its own proxy setting, or start it with HTTPS_PROXY={proxy} "
         f"(Windows cmd: set HTTPS_PROXY={proxy}; PowerShell: $env:HTTPS_PROXY='{proxy}'; macOS/Linux: HTTPS_PROXY={proxy} ./program). "
         "Do not change the system-wide proxy.",
-        "Trust mitmproxy's CA certificate for that program only, as https://docs.mitmproxy.org/stable/concepts-certificates/ describes.",
+        "For HTTPS to be captured, the program must trust mitmproxy's CA certificate: follow mitmproxy's own docs, https://docs.mitmproxy.org/stable/concepts-certificates/.",
         "Use each feature you want as a tool in the program. Anything you do not use is not in the capture. "
-        "To record fewer hosts, see mitmproxy's filter options (for example save_stream_filter); you can also filter at import with --host.",
-        "Stop mitmdump with Ctrl+C: it writes the HAR on exit. Then run: mcpsmith app-desktop "
-        + str(workdir / "capture.har"),
+        "Narrow to the program's API host at import with --host; that is the reliable way.",
+        "Stop mitmdump with Ctrl+C (in mitmweb, quit from the UI). Do not kill the process: hardump writes the HAR only on a clean exit, "
+        "and a killed mitmdump leaves no file. Then run: mcpsmith app-desktop " + str(workdir / "capture.har"),
+        "Safer alternative to the hardump run above: record with "
+        f"mitmdump -p {port} -w {workdir / 'flows.mitm'} (flows are written as they arrive), stop it, then convert without any proxying: "
+        f"mitmdump -nr {workdir / 'flows.mitm'} --set hardump={workdir / 'capture.har'} (it exits by itself and writes the HAR).",
     ]
 
 

@@ -34,6 +34,9 @@ def test_steps(tmp_path, capsys):
     out = capsys.readouterr().out
     assert f"--set hardump={wd / 'capture.har'}" in out
     assert "9090" in out and "authorized" in out
+    assert "Stop mitmdump with Ctrl+C" in out and "Do not kill the process" in out
+    assert f"-nr {wd / 'flows.mitm'} --set hardump={wd / 'capture.har'}" in out
+    assert "save_stream_filter" not in out
     assert not (wd / "source.json").exists()
     for bad in ("verify", "--ssl-insecure", "pinning bypass"):
         assert bad not in out.lower()

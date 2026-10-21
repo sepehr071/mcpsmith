@@ -69,7 +69,7 @@ If a call says the session expired, ask the user to log in again in the shared C
 
 For a desktop program's API, the developer records the program's own traffic with their own proxy; mcpsmith imports the HAR. Use this only for software the user owns or is authorized to analyze; certificate-pinned programs are out of scope, and you offer no way around that.
 
-1. Call `smith_app_desktop(workdir=<dir>)` and show the user the steps. The user installs and runs mitmproxy (`mitmdump --set hardump=<file>`), points that one program at it, uses the features they want as tools, and stops mitmdump. You never install, start or configure the proxy, install a certificate or change system proxy settings yourself.
+1. Call `smith_app_desktop(workdir=<dir>)` and show the user the steps. The user installs and runs mitmproxy (`mitmdump --set hardump=<file>`), points that one program at it (the program must trust mitmproxy's CA for HTTPS, per mitmproxy's certificate docs), uses the features they want as tools, and stops mitmdump with Ctrl-C (mitmweb: quit from the UI). Killing the process writes no HAR. Safer: record with `mitmdump -p <port> -w flows.mitm`, then convert with `mitmdump -nr flows.mitm --set hardump=<file>`. You never install, start or configure the proxy, install a certificate or change system proxy settings yourself.
 2. Call `smith_app_desktop(har=<file>, hosts=[<the program's API host>], workdir=<dir>)`. Other programs' traffic on the same proxy is dropped by `hosts`. If it says nothing to import, the capture holds no JSON API calls: ask the user to record again.
 3. Continue at step 4 (`smith_draft`). The endpoints came from real responses, so they are verified. Delete the HAR afterwards (step 6).
 
