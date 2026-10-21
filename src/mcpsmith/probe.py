@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from . import browser
 from .importers.har import _scrub, _trim
 from .model import Endpoint, Source
 from .runtime.http import Api, ApiError
@@ -29,10 +30,20 @@ class ProbeResult:
     skipped_reason: str | None = None
 
 
+async def _from_chrome(host: str) -> dict[str, str]:
+    if not (st := browser.status()):
+        raise ConnectionError("mcpsmith Chrome is not running")
+    return await browser.cookies_for(host, st["port"])
+
+
+COOKIES = _from_chrome  # tests swap in a fake
+
+
 def _api(source: Source, hosts: list[str], env: dict[str, str] | None) -> Api:
-    auth = None
+    auth, extra = None, {}
     if source.auth and (a := source.auth[0]).type == "browser":
         auth = {"type": "browser"}
+        extra = {"cookie_provider": COOKIES, "login_path": a.login_path, "session_cookie": a.session_cookie}
     elif source.auth and a.env:  # a scheme without an env var has no credential to send
         auth = {"type": a.type, "env": a.env, "param": a.param}
     api = Api(
@@ -44,6 +55,7 @@ def _api(source: Source, hosts: list[str], env: dict[str, str] | None) -> Api:
         concurrency=2,
         cache_ttl=0,
         secret=(env or {}).get,
+        **extra,
     )
     api.RETRIES = 0  # a 429 must stop the probe, not be retried
     api.set_transport(TRANSPORT)

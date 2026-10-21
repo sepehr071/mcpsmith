@@ -85,6 +85,11 @@ def test_probe_stops_host_when_session_expired(monkeypatch):
     sent = []
     _use(monkeypatch, lambda r: sent.append(r) or httpx.Response(401, text="no"))
     src = _src(_ep("GET", "/a"), _ep("GET", "/b"))
-    src.auth = [AuthScheme(name="s", type="browser")]
+    src.auth = [AuthScheme(name="s", type="browser", session_cookie="sid")]
+
+    async def no_cookies(host):
+        return {}
+
+    monkeypatch.setattr(probe, "COOKIES", no_cookies)
     results = probe.run(src)
-    assert len(sent) == 1 and "expired" in results[1].skipped_reason
+    assert sent == [] and "expired" in results[1].skipped_reason
