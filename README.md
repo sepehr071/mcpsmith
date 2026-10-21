@@ -23,7 +23,7 @@ uvx mcpsmith setup
 Apps and programs: only software you own or are authorized to analyze.
 
 <p align="center"><img src="docs/assets/screenshot-help.png" alt="mcpsmith command list" width="100%"></p>
-<p align="center"><em>`mcpsmith --help`: the command list.</em></p>
+<p align="center"><em><code>mcpsmith --help</code>: the command list.</em></p>
 
 ## Quickstart: a logged-in website
 
@@ -47,7 +47,7 @@ Your passwords and 2FA codes never reach the agent. Details are under [Live hub]
 Numbers are from runs on 2026-10-21 with mcpsmith 0.4.0. Reproduce the first two with `mcpsmith app-android` and `mcpsmith app-js` on those apps.
 
 <p align="center"><img src="docs/assets/screenshot-app-js.png" alt="mcpsmith app-js reading an Electron app's own code" width="100%"></p>
-<p align="center"><em>`mcpsmith app-js` reading an Electron app's own code.</em></p>
+<p align="center"><em><code>mcpsmith app-js</code> reading an Electron app's own code.</em></p>
 
 ## For coding agents
 
@@ -122,7 +122,7 @@ Before setup first changes a config file, it copies the file to `*.mcpsmith.bak`
 Claude Code plugin users already get all three servers from the plugin and do not need `setup`.
 
 <p align="center"><img src="docs/assets/screenshot-setup.png" alt="mcpsmith setup --dry-run plan" width="100%"></p>
-<p align="center"><em>`mcpsmith setup --dry-run` prints what it would change and writes nothing.</em></p>
+<p align="center"><em><code>mcpsmith setup --dry-run</code> prints what it would change and writes nothing.</em></p>
 
 ## Transforms
 
