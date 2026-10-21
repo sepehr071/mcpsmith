@@ -5,7 +5,7 @@ import pytest
 
 from mcpsmith import probe
 from mcpsmith.design import digest, draft, validate
-from mcpsmith.model import Endpoint, Param, Source
+from mcpsmith.model import AuthScheme, Endpoint, Param, Source
 
 
 @pytest.fixture(autouse=True)
@@ -70,3 +70,21 @@ def test_unverified_endpoint_still_drafts_and_validates():
     plan = draft(src)
     assert plan.tools and plan.tools[0].output.fields == {}
     assert any("unverified" in i.message for i in validate(plan, src))
+
+
+def test_limit_counts_real_requests_not_skips(monkeypatch):
+    sent = []
+    _use(monkeypatch, lambda r: sent.append(r) or httpx.Response(200, json={"ok": 1}))
+    src = _src(_ep("POST", "/w"), _ep("GET", "/a"), _ep("GET", "/b"), _ep("GET", "/c"))
+    results = probe.run(src, limit=2)
+    assert [r.ok for r in results] == [False, True, True, False]
+    assert len(sent) == 2 and "limit" in results[3].skipped_reason
+
+
+def test_probe_stops_host_when_session_expired(monkeypatch):
+    sent = []
+    _use(monkeypatch, lambda r: sent.append(r) or httpx.Response(401, text="no"))
+    src = _src(_ep("GET", "/a"), _ep("GET", "/b"))
+    src.auth = [AuthScheme(name="s", type="browser")]
+    results = probe.run(src)
+    assert len(sent) == 1 and "expired" in results[1].skipped_reason

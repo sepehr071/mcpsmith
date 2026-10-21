@@ -159,6 +159,7 @@ async def smith_probe(
 ) -> dict:
     """Call unverified GET endpoints live with the user's own credentials and store scrubbed example responses.
 
+    This sends real requests to a third-party API with the user's credentials; even GETs hit the live service.
     Endpoints read from an app's code have no example response. Non-GET endpoints are skipped unless writes=true,
     which needs the user's confirmation. Next: smith_draft or smith_validate.
     """

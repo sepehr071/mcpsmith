@@ -68,12 +68,13 @@ def run(
 
 
 async def _run(source: Source, writes: bool, limit: int, env: dict[str, str] | None) -> list[ProbeResult]:
-    todo = [e for e in source.endpoints if not e.verified][:limit]
+    todo = [e for e in source.endpoints if not e.verified]
     hosts = [h for e in todo if e.base_url and (h := urlsplit(e.base_url).hostname)]
     api = _api(source, hosts, env)
-    stopped: dict[str, int] = {}
+    stopped: dict[str, str] = {}
     results: list[ProbeResult] = []
     sent = False
+    sent_count = 0
     for e in todo:
         r = ProbeResult(e.id)
         results.append(r)
@@ -87,17 +88,23 @@ async def _run(source: Source, writes: bool, limit: int, env: dict[str, str] | N
         url, path, query = t
         host = urlsplit(e.base_url or source.base_url).hostname or ""
         if host in stopped:
-            r.skipped_reason = f"{host} answered {stopped[host]} (rate limit or blocked); probing stopped for it"
+            r.skipped_reason = f"{host} {stopped[host]}; probing stopped for it"
+            continue
+        if sent_count >= limit:
+            r.skipped_reason = f"limit of {limit} requests reached"
             continue
         if sent:
             await asyncio.sleep(DELAY)
         sent = True
+        sent_count += 1
         try:
             data = await api.call(method, url, path=path, query=query)
         except ApiError as err:
             r.status, r.error = err.status, str(err)
             if err.status in STOP:
-                stopped[host] = err.status
+                stopped[host] = f"answered {err.status} (rate limit or blocked)"
+            elif err.expired:
+                stopped[host] = "session has expired"
             continue
         e.response_example = _trim(_scrub(data))  # scrub before trimming so no half-cut email survives
         e.verified = True
