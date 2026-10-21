@@ -7,7 +7,9 @@ description: Build a curated, tested MCP server (agent tools) with mcpsmith. Use
 
 mcpsmith turns an OpenAPI file or a recorded website session (HAR) into a Python MCP server project with tests, CI, a publish workflow and a Claude Code plugin. You design the tools; mcpsmith generates and checks the code.
 
-Run commands with `uvx mcpsmith <cmd>` (or `mcpsmith <cmd>` if installed). No shell? Use the mcpsmith MCP tools instead: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check` (paths absolute). If they are missing: `claude mcp add mcpsmith -- uvx mcpsmith mcp`.
+Run commands with `uvx mcpsmith <cmd>` (or `mcpsmith <cmd>` if installed). No shell? Use the mcpsmith MCP tools instead: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check`, and the hub tools `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_tools`, `smith_call` (paths absolute).
+
+Two ways to finish. Hub (default for a site the user logs in to, or to try tools fast): `smith_connect` turns `plan.yaml` into live tools on this machine, no project needed; for a site that needs a login see the `extract-api` skill. Export: `generate` writes a standalone project to publish (section 6). Connect first, verify the tools, export only when the user wants to publish or share. If they are missing: `claude mcp add mcpsmith -- uvx mcpsmith mcp`.
 
 ## 0. Ask first
 
@@ -16,7 +18,7 @@ Ask the user, then wait:
 - Input: an OpenAPI/Swagger file or URL, or a website with no public API?
 - Auth: does it need a token or login? Which account is safe to test with?
 
-Done means: `uv run pytest` passes in the project and `mcpsmith check` shows no errors and sane output sizes.
+Done means: the connected tools return correct output (hub), or `uv run pytest` passes in the exported project and `mcpsmith check` shows no errors and sane output sizes.
 
 ## 1. Get the source
 
@@ -59,19 +61,25 @@ mcpsmith draft [-w .mcpsmith] [--name site-mcp] [--force]
 - `output`: set `root` and `fields` (output name -> dotted source path) so only useful fields come back; keep ids needed by the next tool; set `max_items`.
 - Fill `example` for every tool (used by tests and `check`). Mark `read_only: false` only for writes.
 - Write `instructions`: the workflow across tools, units, currency, language, conventions.
-- Set `env_prefix`, `auth`, `impersonate: true` for sites that block plain clients (needs `mcpsmith[stealth]`).
+- Set `env_prefix`, `auth`, `impersonate: true` for sites that block plain clients (needs `mcpsmith[stealth]`). Logged-in site in the hub: `auth: {type: browser, login_path: /login}`.
+- Dates, unix times, minutes, currency: `transform` on args and `output.transforms` (names in `mcpsmith guide`), and `timezone` (IANA name; empty = local zone).
 
 For field-level rules and the review checklist use the `design-mcp-tools` skill. If the user has an API key and wants no manual step: `mcpsmith design --goal "..." --provider anthropic|openai|openrouter|ollama` writes the plan instead (keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`; ollama needs none).
 
-## 4. Validate, generate, test
+## 4. Validate, connect, generate, test
 
 ```
 mcpsmith validate [-w .mcpsmith]            # exit 1 on errors; fix warnings too
+```
+
+Hub: `smith_connect(workdir, name)` adds the tools now and saves the connection (`mcpsmith connections` lists them; `smith_disconnect` removes one). Personal credentials: the developer runs `mcpsmith secret set <connection> <ENV_NAME>` (hidden prompt, OS keychain); never ask for them in chat. Export:
+
+```
 mcpsmith generate [-w .mcpsmith] -o ../site-mcp [--force]
 cd ../site-mcp && uv run pytest
 ```
 
-Offline tests replay captured responses. A plan error or failing test means fix `plan.yaml` and regenerate.
+Offline tests replay captured responses. A plan error or failing test means fix `plan.yaml` and regenerate. `generate` refuses `auth: {type: browser}` plans (they only work in the hub): switch the plan to bearer/header/cookie auth first. Secrets are never exported.
 
 ## 5. Check live
 

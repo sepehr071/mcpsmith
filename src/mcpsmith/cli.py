@@ -165,6 +165,64 @@ def cmd_guide(args) -> int:
     return 0
 
 
+def cmd_secret(args) -> int:
+    from keyring.errors import KeyringError
+
+    try:
+        return _secret(args)
+    except KeyringError as e:
+        raise RuntimeError(
+            f"no usable keychain ({e}); set the {args.name or 'secret'} environment variable instead"
+        ) from e
+
+
+def _secret(args) -> int:
+    import getpass
+
+    from . import secrets
+
+    if args.action == "set":
+        value = getpass.getpass(f"{args.name} for {args.connection} (hidden): ")
+        if not value:
+            raise ValueError("empty value; nothing stored")
+        secrets.set(args.connection, args.name, value, once=args.once)
+        print(f"stored {args.name} for {args.connection}" + (" (one use)" if args.once else ""))
+    elif args.action == "delete":
+        secrets.delete(args.connection, args.name)
+        print(f"deleted {args.name} for {args.connection}")
+    else:
+        print(", ".join(secrets.names(args.connection)) or "(none)")
+    return 0
+
+
+def cmd_browser(args) -> int:
+    from . import browser
+
+    info = browser.launch(args.port, no_proxy=args.no_proxy)
+    print(
+        f"Chrome on port {info['port']} (proxy: {info['proxy'] or 'none'}), profile {browser.home() / 'chrome-profile'}"
+    )
+    print("next: open the site in this window and log in")
+    return 0
+
+
+def cmd_connections(args) -> int:
+    from mcp.server import MCPServer
+
+    from .hub import Hub
+
+    hub = Hub(MCPServer("mcpsmith"))
+    hub.load_all()
+    for c in hub.connections():
+        print(
+            f"{c['name']}: "
+            + (f"{len(c['tools'])} tools, auth {c['auth'] or 'none'}" if c["ok"] else f"NOT LOADED ({c['warning']})")
+        )
+    if not hub.connections():
+        print("(none)")
+    return 0
+
+
 def cmd_mcp(args) -> int:
     from .server import main as serve
 
@@ -222,6 +280,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--writes", action="store_true", help="also call tools that change data (read_only: false)")
 
+    sp = command("secret", cmd_secret, "store a connection's credentials in the OS keychain", workdir=False)
+    sp.add_argument("action", choices=["set", "list", "delete"])
+    sp.add_argument("connection")
+    sp.add_argument("name", nargs="?", help="secret name, e.g. SHOP_MCP_TOKEN (set, delete)")
+    sp.add_argument("--once", action="store_true", help="forget the value after its first use (set)")
+
+    sp = command("browser", cmd_browser, "start (or reuse) the shared Chrome you log in with", workdir=False)
+    sp.add_argument("--port", type=int, default=9222)
+    sp.add_argument("--no-proxy", action="store_true", help="do not pass HTTPS_PROXY on to Chrome")
+
+    command("connections", cmd_connections, "list the connections saved for the mcpsmith server", workdir=False)
     command("guide", cmd_guide, "print the tool-design rules for plan.yaml", workdir=False)
     command("mcp", cmd_mcp, "run the mcpsmith MCP server on stdio", workdir=False)
     return p
@@ -233,7 +302,10 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     except (AttributeError, ValueError):
         pass
-    args = build_parser().parse_args(argv)
+    p = build_parser()
+    args = p.parse_args(argv)
+    if args.command == "secret" and (args.action != "list") != bool(args.name):
+        p.error("secret set/delete need a NAME; secret list takes none")
     try:
         return args.fn(args)
     except EXPECTED as e:

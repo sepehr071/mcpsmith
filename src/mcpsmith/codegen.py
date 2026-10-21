@@ -13,10 +13,10 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from .design import validate
 from .model import ARG_RESERVED, REPO, Plan, Source, Tool, ToolArg, save_plan
+from .runtime.interpret import api_kwargs, auth_env, endpoint_of
 
 TEMPLATES = Path(__file__).parent / "templates"
 PY_TYPES = {"string": "str", "integer": "int", "number": "float", "boolean": "bool", "array": "list", "object": "dict"}
@@ -29,6 +29,10 @@ def generate(plan: Plan, out: Path, source: Source | None = None, force: bool = 
     (unless `force`)."""
     if errors := [f"{i.where}: {i.message}" for i in validate(plan, source) if i.level == "error"]:
         raise ValueError("Plan is not valid:\n- " + "\n- ".join(errors))
+    if plan.auth and plan.auth.type == "browser":
+        raise ValueError(
+            "auth type 'browser' only works in the hub; switch auth to token (bearer/header/cookie) to export."
+        )
     plan = Plan.model_validate(plan.model_dump(mode="json"))  # dates and other YAML types become plain JSON values
     out = Path(out)
     if out.exists() and any(out.iterdir()) and not force:
@@ -47,7 +51,7 @@ def generate(plan: Plan, out: Path, source: Source | None = None, force: bool = 
         ".gitignore": _template("gitignore"),
         f"src/{pkg}/__init__.py": _init(plan),
         f"src/{pkg}/server.py": _server(plan, source),
-        "tests/conftest.py": _template("conftest.py.tmpl", __PACKAGE__=pkg, __AUTH_ENV__=_py(_auth_env(plan))),
+        "tests/conftest.py": _template("conftest.py.tmpl", __PACKAGE__=pkg, __AUTH_ENV__=_py(auth_env(plan))),
         "tests/test_tools.py": _tests(plan, fixtures),
         **{f"tests/fixtures/{name}.json": text for name, text in fixtures.items()},
         ".github/workflows/ci.yml": _template("ci.yml"),
@@ -131,24 +135,6 @@ def _first_line(text: str) -> str:
 # ---------- server code ----------
 
 
-def _endpoint(t: Tool, plan: Plan, source: Source | None) -> tuple[str, str]:
-    """(METHOD, url) for a tool: a path relative to the base URL, or absolute when the endpoint lives elsewhere."""
-    ep = source.endpoint(t.endpoint) if source else None
-    if ep:
-        base = ep.base_url.rstrip("/")
-        url = f"{base}{ep.path}" if base and base != plan.base_url.rstrip("/") else ep.path
-        return ep.method.upper(), url
-    m = re.fullmatch(r"([A-Za-z]+)\s+(\S+)", t.endpoint.strip())
-    if not m:
-        where = "is not in the source" if source else "needs a source"
-        raise ValueError(f"Tool {t.name}: endpoint {t.endpoint!r} {where}; otherwise write it as 'METHOD /path'.")
-    return m.group(1).upper(), m.group(2)
-
-
-def _auth_env(plan: Plan) -> str | None:
-    return (plan.auth.env or f"{plan.env_prefix}_TOKEN") if plan.auth else None
-
-
 def _param(a: ToolArg) -> str:
     values = a.enum or (list(a.map) if a.map else None)
     kind = f"Literal[{', '.join(map(_py, values))}]" if values else PY_TYPES[a.type]
@@ -165,12 +151,18 @@ def _param(a: ToolArg) -> str:
     return f"{a.name}: Annotated[{kind}, Field({', '.join(field)})] = {_py(a.default)},{noqa}"
 
 
+def _arg_expr(a: ToolArg) -> str:
+    if a.transform:
+        return f"transform_in({_s(a.transform)}, {a.name}, TZ)"
+    return f"{_py(a.map)}.get({a.name}, {a.name})" if a.map else a.name
+
+
 def _tool_fn(t: Tool, method: str, url: str) -> str:
     if clash := ARG_RESERVED & {a.name for a in t.args}:
         raise ValueError(f"Tool {t.name}: argument name(s) {sorted(clash)} are reserved; rename them.")
     groups: dict[str, list[str]] = {k: [] for k in CALL_KWARGS}
     whole = None
-    exprs = [(a.to, f"{_py(a.map)}.get({a.name}, {a.name})" if a.map else a.name) for a in t.args]
+    exprs = [(a.to, _arg_expr(a)) for a in t.args]
     for target, expr in [*exprs, *((k, _py(v)) for k, v in t.fixed.items())]:
         if target == "body":
             whole = expr
@@ -198,24 +190,16 @@ def _tool_fn(t: Tool, method: str, url: str) -> str:
     lines = [deco, f"async def {t.name}(", *(f"    {_param(a)}" for a in args), "):"]
     lines.append(f"    {_triple(t.description.strip(), indent='    ')}")
     lines.append(f"    data = await api.call({', '.join(call)})")
-    lines.append(f"    return shape({', '.join(shape)})")
+    result = f"shape({', '.join(shape)})"
+    if o.transforms:
+        result = f"apply_transforms({result}, {_py(o.transforms)}, TZ)"
+    lines.append(f"    return {result}")
     return "\n".join(lines)
 
 
 def _server(plan: Plan, source: Source | None) -> str:
-    endpoints = {t.name: _endpoint(t, plan, source) for t in plan.tools}
-    base_host = urlsplit(plan.base_url).hostname
-    extra = sorted({urlsplit(u).hostname for _, u in endpoints.values() if "://" in u} - {base_host})
-    kwargs = [f"base_url={_s(plan.base_url)}", f"env_prefix={_s(plan.env_prefix)}"]
-    if extra:
-        kwargs.append(f"hosts={_py([base_host, *extra])}")
-    kwargs.append(f"headers={_py(plan.headers)}")
-    if plan.auth:
-        auth = {"type": plan.auth.type, "env": _auth_env(plan)} | (
-            {"param": plan.auth.param} if plan.auth.param else {}
-        )
-        kwargs.append(f"auth={_py(auth)}")
-    kwargs += [f"impersonate={plan.impersonate}", f"concurrency={plan.concurrency}", f"cache_ttl={plan.cache_ttl}"]
+    endpoints = {t.name: endpoint_of(t, plan, source) for t in plan.tools}
+    kwargs = [f"{k}={_py(v)}" for k, v in api_kwargs(plan, source).items()]
 
     has_args = any(t.args for t in plan.tools)
     has_enum = any(a.enum or a.map for t in plan.tools for a in t.args)
@@ -223,10 +207,16 @@ def _server(plan: Plan, source: Source | None) -> str:
     head = [_triple(f"{plan.title} MCP server, generated by mcpsmith from mcpsmith.yaml; edit freely."), ""]
     if typing:
         head += [f"from typing import {', '.join(typing)}", ""]
-    head.append("from mcpsmith.runtime import Api, Registry, build_server, run, shape")
+    names = ["Api", "Registry", "build_server", "run", "shape"]
+    if any(t.output.transforms for t in plan.tools):
+        names.append("apply_transforms")
+    if any(a.transform for t in plan.tools for a in t.args):
+        names.append("transform_in")
+    head.append(f"from mcpsmith.runtime import {', '.join(sorted(names))}")  # ASCII order = ruff's isort order
     if has_args:
         head.append("from pydantic import Field")
-    head += ["", "from . import __version__", "", f"INSTRUCTIONS = {_triple(plan.instructions)}", ""]
+    head += ["", "from . import __version__", "", f"TZ = {_s(plan.timezone)}"]
+    head += [f"INSTRUCTIONS = {_triple(plan.instructions)}", ""]
     head += ["api = Api(", *(f"    {k}," for k in kwargs), ")", "tool = Registry()"]
     tools = [_tool_fn(t, *endpoints[t.name]) for t in plan.tools]
     website = _s(plan.repository) if plan.repository else "None"
@@ -299,12 +289,12 @@ def _env_vars(plan: Plan) -> list[dict[str, Any]]:
             "query": f"API credential, sent as the {a.param} query parameter.",
             "cookie": f"Session credential, sent as the {a.param} cookie.",
         }[a.type]
-        env.append({"name": _auth_env(plan), "description": how, "isRequired": True, "isSecret": True})
+        env.append({"name": auth_env(plan), "description": how, "isRequired": True, "isSecret": True})
     return env
 
 
 def _pyproject(plan: Plan) -> str:
-    dep = "mcpsmith[stealth]>=0.1" if plan.impersonate else "mcpsmith>=0.1"
+    dep = "mcpsmith[stealth]>=0.2" if plan.impersonate else "mcpsmith>=0.2"
     author = f"authors = [{{ name = {_toml(plan.author)} }}]\n" if plan.author else ""
     urls = ""
     if plan.repository:
@@ -376,7 +366,7 @@ def _cell(text: str) -> str:
 
 
 def _readme(plan: Plan, short: str) -> str:
-    env = _auth_env(plan)
+    env = auth_env(plan)
     add = (
         f"claude mcp add {short} -e {env}=<value> -- uvx {plan.name}"
         if env
@@ -486,7 +476,7 @@ def _skill(plan: Plan, short: str) -> str:
         if writes
         else f"- Read-only: these tools cannot change anything on {plan.title}."
     ]
-    if env := _auth_env(plan):
+    if env := auth_env(plan):
         rules.append(f"- Needs `{env}` set to the user's credential. On HTTP 401, ask the user to check it.")
     rules += [
         f"- On timeouts or HTTP 403, set `{plan.env_prefix}_PROXY` to an HTTP proxy (system proxy settings are ignored).",

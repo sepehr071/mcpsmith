@@ -381,3 +381,12 @@ def test_deref_expansion_is_bounded():
     start = time.perf_counter()
     ep = openapi.parse(doc).endpoints[0]
     assert time.perf_counter() - start < 1 and ep.response_schema["type"] == "object"
+
+
+def test_rea_scenario_capture():
+    src = importers.load(str(FIXTURES / "rea" / "scenario.json"))
+    ep = by_id(src)["POST /1/indexes/Item_dev/query"]
+    assert src.kind == "har" and len(src.endpoints) == 1
+    assert ep.body_example["query"] == "mcp"
+    assert len(ep.response_example["hits"]) == 2
+    assert "28f0e1ec" not in json.dumps(src.model_dump())  # key from the capture URL is not kept

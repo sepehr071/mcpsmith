@@ -1,0 +1,307 @@
+{
+ "predicate_type": "rea.browser-scenario-capture",
+ "operation": "capture_browser_scenario",
+ "normalized_result": {
+  "events": {
+   "retained": 7,
+   "dropped": 0,
+   "items": [
+    {
+     "sequence": 6,
+     "step_index": 0,
+     "transaction_id": "request-3",
+     "redirected_from_transaction_id": null,
+     "redirected_from_transaction_state": "root",
+     "method": "GET",
+     "url": {
+      "url": "https://hn.algolia.com/public/main-6e634771f729331a3c3c.js",
+      "origin": "https://hn.algolia.com",
+      "query_parameter_names": [],
+      "redacted": false
+     },
+     "resource_type": "script",
+     "header_names": [],
+     "kind": "request",
+     "status": null,
+     "failure": null
+    },
+    {
+     "sequence": 8,
+     "step_index": 0,
+     "transaction_id": "request-3",
+     "redirected_from_transaction_id": null,
+     "redirected_from_transaction_state": "root",
+     "method": "GET",
+     "url": {
+      "url": "https://hn.algolia.com/public/main-6e634771f729331a3c3c.js",
+      "origin": "https://hn.algolia.com",
+      "query_parameter_names": [],
+      "redacted": false
+     },
+     "resource_type": "script",
+     "header_names": [
+      "age",
+      "alt-svc",
+      "cache-control",
+      "content-disposition",
+      "content-length",
+      "content-type",
+      "date",
+      "etag",
+      "last-modified",
+      "server",
+      "via",
+      "x-cloud-trace-context"
+     ],
+     "kind": "response",
+     "status": 200,
+     "failure": null
+    },
+    {
+     "sequence": 11,
+     "step_index": 0,
+     "kind": "network-content",
+     "transaction_id": "request-3",
+     "source_event_sequence": 8,
+     "phase": "response",
+     "headers": {
+      "state": "captured",
+      "items": [
+       {
+        "name": "age",
+        "value": "1",
+        "redacted": false
+       },
+       {
+        "name": "alt-svc",
+        "value": "h3=\":443\"; ma=2592000,h3-29=\":443\"; ma=2592000",
+        "redacted": false
+       },
+       {
+        "name": "cache-control",
+        "value": "no-cache",
+        "redacted": false
+       },
+       {
+        "name": "etag",
+        "value": "\"1755549896.0-2608202-407047307\"",
+        "redacted": false
+       }
+      ]
+     },
+     "body": {
+      "state": "unavailable",
+      "reason": "body-size-limit",
+      "message": "Playwright materialized the body before its 65536-byte retained-body budget was checked.",
+      "limit_bytes": 65536,
+      "observed_bytes": 2608202
+     }
+    },
+    {
+     "sequence": 27,
+     "step_index": 0,
+     "transaction_id": "request-9",
+     "redirected_from_transaction_id": null,
+     "redirected_from_transaction_state": "root",
+     "method": "POST",
+     "url": {
+      "url": "https://uj5wyc0l7x-1.algolianet.com/1/indexes/Item_dev/query?x-algolia-agent=Algolia%20for%20JavaScript%20(4.13.1)%3B%20Browser%20(lite)&x-algolia-api-key=REDACTED&x-algolia-application-id=UJ5WYC0L7X",
+      "origin": "https://uj5wyc0l7x-1.algolianet.com",
+      "query_parameter_names": [
+       "x-algolia-agent",
+       "x-algolia-api-key",
+       "x-algolia-application-id"
+      ],
+      "redacted": false
+     },
+     "resource_type": "xhr",
+     "header_names": [
+      "content-type"
+     ],
+     "kind": "request",
+     "status": null,
+     "failure": null
+    },
+    {
+     "sequence": 38,
+     "step_index": 1,
+     "transaction_id": "request-9",
+     "redirected_from_transaction_id": null,
+     "redirected_from_transaction_state": "root",
+     "method": "POST",
+     "url": {
+      "url": "https://uj5wyc0l7x-1.algolianet.com/1/indexes/Item_dev/query?x-algolia-agent=Algolia%20for%20JavaScript%20(4.13.1)%3B%20Browser%20(lite)&x-algolia-api-key=REDACTED&x-algolia-application-id=UJ5WYC0L7X",
+      "origin": "https://uj5wyc0l7x-1.algolianet.com",
+      "query_parameter_names": [
+       "x-algolia-agent",
+       "x-algolia-api-key",
+       "x-algolia-application-id"
+      ],
+      "redacted": false
+     },
+     "resource_type": "xhr",
+     "header_names": [
+      "accept-encoding",
+      "access-control-allow-origin",
+      "access-control-expose-headers",
+      "cache-control",
+      "connection",
+      "content-disposition",
+      "content-encoding",
+      "content-type",
+      "correlation-id",
+      "date",
+      "server",
+      "strict-transport-security",
+      "timing-allow-origin",
+      "transfer-encoding",
+      "x-alg-pt",
+      "x-content-type-options"
+     ],
+     "kind": "response",
+     "status": 200,
+     "failure": null
+    },
+    {
+     "sequence": 39,
+     "step_index": 1,
+     "kind": "network-content",
+     "transaction_id": "request-9",
+     "source_event_sequence": 27,
+     "phase": "request",
+     "headers": {
+      "state": "captured",
+      "items": [
+       {
+        "name": "Accept",
+        "value": "*/*",
+        "redacted": false
+       },
+       {
+        "name": "Accept-Encoding",
+        "value": "gzip, deflate, br, zstd",
+        "redacted": false
+       },
+       {
+        "name": "Accept-Language",
+        "value": "en-US,en;q=0.9",
+        "redacted": false
+       },
+       {
+        "name": "Connection",
+        "value": "keep-alive",
+        "redacted": false
+       },
+       {
+        "name": "content-type",
+        "value": "application/x-www-form-urlencoded",
+        "redacted": false
+       }
+      ]
+     },
+     "body": {
+      "state": "captured",
+      "representation": "browser-exposed-request-bytes",
+      "encoding": "base64",
+      "content": "eyJxdWVyeSI6Im1jcCIsImFuYWx5dGljc1RhZ3MiOlsid2ViIl0sInBhZ2UiOjAsImhpdHNQZXJQYWdlIjozMCwibWluV29yZFNpemVmb3IxVHlwbyI6NCwibWluV29yZFNpemVmb3IyVHlwb3MiOjgsImFkdmFuY2VkU3ludGF4Ijp0cnVlLCJpZ25vcmVQbHVyYWxzIjpmYWxzZSwiY2xpY2tBbmFseXRpY3MiOnRydWUsIm1pblByb3hpbWl0eSI6NywibnVtZXJpY0ZpbHRlcnMiOltdLCJ0YWdGaWx0ZXJzIjpbWyJzdG9yeSJdLFtdXSwidHlwb1RvbGVyYW5jZSI6dHJ1ZSwicXVlcnlUeXBlIjoicHJlZml4Tm9uZSIsInJlc3RyaWN0U2VhcmNoYWJsZUF0dHJpYnV0ZXMiOlsidGl0bGUiLCJjb21tZW50X3RleHQiLCJ1cmwiLCJzdG9yeV90ZXh0IiwiYXV0aG9yIl0sImdldFJhbmtpbmdJbmZvIjp0cnVlfQ==",
+      "bytes": 397,
+      "media_type": "application/x-www-form-urlencoded",
+      "redacted": false
+     }
+    },
+    {
+     "sequence": 41,
+     "step_index": 1,
+     "kind": "network-content",
+     "transaction_id": "request-9",
+     "source_event_sequence": 38,
+     "phase": "response",
+     "headers": {
+      "state": "captured",
+      "items": [
+       {
+        "name": "Accept-Encoding",
+        "value": "deflate, gzip",
+        "redacted": false
+       },
+       {
+        "name": "Access-Control-Allow-Origin",
+        "value": "*",
+        "redacted": false
+       },
+       {
+        "name": "Access-Control-Expose-Headers",
+        "value": "Correlation-ID",
+        "redacted": false
+       },
+       {
+        "name": "Cache-Control",
+        "value": "no-store",
+        "redacted": false
+       },
+       {
+        "name": "Connection",
+        "value": "keep-alive",
+        "redacted": false
+       },
+       {
+        "name": "Content-Disposition",
+        "value": "inline; filename=a.txt",
+        "redacted": false
+       },
+       {
+        "name": "Content-Encoding",
+        "value": "gzip",
+        "redacted": false
+       },
+       {
+        "name": "Content-Type",
+        "value": "application/json; charset=UTF-8",
+        "redacted": false
+       },
+       {
+        "name": "Server",
+        "value": "nginx",
+        "redacted": false
+       },
+       {
+        "name": "Strict-Transport-Security",
+        "value": "max-age=31536000; includeSubDomains; preload",
+        "redacted": false
+       },
+       {
+        "name": "Timing-Allow-Origin",
+        "value": "*",
+        "redacted": false
+       },
+       {
+        "name": "Transfer-Encoding",
+        "value": "chunked",
+        "redacted": false
+       },
+       {
+        "name": "X-Alg-PT",
+        "value": "7",
+        "redacted": false
+       },
+       {
+        "name": "X-Content-Type-Options",
+        "value": "nosniff",
+        "redacted": false
+       }
+      ]
+     },
+     "body": {
+      "state": "captured",
+      "representation": "playwright-response-body-bytes",
+      "encoding": "base64",
+      "content": "eyJuYkhpdHMiOjY5MDgsInBhZ2UiOjAsIm5iUGFnZXMiOjM0LCJoaXRzUGVyUGFnZSI6MzAsInF1ZXJ5IjoibWNwIiwiaGl0cyI6W3sidGl0bGUiOiJTdXBhYmFzZSBNQ1AgY2FuIGxlYWsgeW91ciBlbnRpcmUgU1FMIGRhdGFiYXNlIiwidXJsIjoiaHR0cHM6Ly93d3cuZ2VuZXJhbGFuYWx5c2lzLmNvbS9ibG9nL3N1cGFiYXNlLW1jcC1ibG9nIiwiYXV0aG9yIjoicmV4cG9zaXRvcnkiLCJwb2ludHMiOjg0OCwibnVtX2NvbW1lbnRzIjo0NzAsInN0b3J5X2lkIjo0NDUwMjMxOCwiY3JlYXRlZF9hdCI6IjIwMjUtMDctMDhUMTc6NDY6NTVaIn0seyJ0aXRsZSI6IkFub3RoZXIgc3RvcnkiLCJ1cmwiOiJodHRwczovL3d3dy5nZW5lcmFsYW5hbHlzaXMuY29tL2Jsb2cvc3VwYWJhc2UtbWNwLWJsb2ciLCJhdXRob3IiOiJyZXhwb3NpdG9yeSIsInBvaW50cyI6MywibnVtX2NvbW1lbnRzIjo0NzAsInN0b3J5X2lkIjoxLCJjcmVhdGVkX2F0IjoiMjAyNS0wNy0wOFQxNzo0Njo1NVoifV19",
+      "bytes": 501,
+      "media_type": "application/json; charset=UTF-8",
+      "redacted": false
+     }
+    }
+   ]
+  }
+ }
+}

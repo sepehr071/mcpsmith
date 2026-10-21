@@ -28,6 +28,25 @@ mcpsmith makes the curated server the default output:
 Non-goals (v0.1): running a browser per call, solving JS challenges/captchas, multi-call workflow tools
 in the plan (edit the generated code for those), non-Python output, a hosted service.
 
+## Live hub
+
+The mcpsmith MCP server doubles as a hub: `smith_connect` validates a plan, copies it with `source.json` to
+`~/.mcpsmith/connections/<name>` (`MCPSMITH_HOME`), and registers its tools on the running server through the
+plan interpreter (`runtime/interpret.py`), which behaves like generated code. Saved connections reload on
+start. Connections are personal; `generate` is the publish path and refuses `auth: browser` plans.
+
+- Recording: `mcpsmith browser` starts a shared Chrome (own profile, remote debugging on localhost);
+  `smith_record_start/stop` capture API traffic from it into a HAR with cookie/token headers dropped and bodies
+  scrubbed. Agents drive pages with Chrome DevTools MCP pointed at the same Chrome, and must not call its
+  `get_network_request` (it prints cookies).
+- Browser auth: the runtime reads that Chrome's session cookies for the base host only; a 401 or a redirect to
+  `auth.login_path` becomes a "log in again" error.
+- Secrets: `mcpsmith secret set` stores values in the OS keychain (hidden prompt); they never pass through the
+  agent or plan files.
+- Transforms (`runtime/transforms.py`): input `ToolArg.transform` and output `Output.transforms`, using plan
+  `timezone` (IANA name, empty = system local zone). Generic first (ISO dates, unix time, minutes, currency
+  scale), Jalali as one optional calendar.
+
 ## Pipeline and files
 
 ```

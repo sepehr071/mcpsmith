@@ -14,13 +14,16 @@ import re
 import sys
 from pathlib import Path
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
 
+from .runtime import transforms
+
 ParamIn = Literal["path", "query", "header", "cookie", "body"]
 ArgType = Literal["string", "integer", "number", "boolean", "array", "object"]
-AuthType = Literal["bearer", "header", "query", "cookie", "basic"]
+AuthType = Literal["bearer", "header", "query", "cookie", "basic", "browser"]
 
 # Every pattern is used with fullmatch: `$` would accept a trailing newline.
 PLAN_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
@@ -99,6 +102,22 @@ def check_target(v: str) -> str:
     return v
 
 
+def check_transform(v: str, names: frozenset[str] = transforms.NAMES) -> str:
+    if v not in names:
+        raise ValueError(f"unknown transform {v!r}; use one of {sorted(names)}.")
+    return v
+
+
+def check_timezone(v: str) -> str:
+    """Empty (the system's local zone) or an IANA name such as 'Asia/Tehran'."""
+    if v:
+        try:
+            ZoneInfo(v)
+        except (KeyError, ValueError, OSError):  # unknown key, malformed key, unreadable tz data
+            raise ValueError(f"timezone {v!r} is not an IANA zone; use e.g. 'Asia/Tehran' or leave it empty.") from None
+    return v
+
+
 def check_repository(v: str) -> str:
     """Empty, or a github.com/<owner>/<repo> URL; a trailing '/' or '.git' is dropped."""
     v = v.strip().rstrip("/").removesuffix(".git").rstrip("/")
@@ -127,6 +146,9 @@ class AuthScheme(BaseModel):
     param: str = Field("", description="Header, query or cookie name that carries the credential.")
     env: str = Field(
         "", description="Environment variable the generated server reads the credential from; starts with env_prefix_."
+    )
+    login_path: str = Field(
+        "", description="Browser auth: path prefix whose redirect means logged out, e.g. '/Account/Login'."
     )
 
     @field_validator("env")
@@ -182,11 +204,19 @@ class ToolArg(BaseModel):
     minimum: float | None = None
     maximum: float | None = None
     to: str = Field(description="Request target: path.<n> | query.<n> | header.<n> | cookie.<n> | body | body.<a.b>")
+    transform: str | None = Field(
+        default=None, description="Input transform applied to the value before sending, e.g. 'jalali->unix'."
+    )
 
     @field_validator("name")
     @classmethod
     def _name(cls, v: str) -> str:
         return check_arg_name(v)
+
+    @field_validator("transform")
+    @classmethod
+    def _transform(cls, v: str | None) -> str | None:
+        return v if v is None else check_transform(v, transforms.INPUT_NAMES)
 
     @field_validator("to")
     @classmethod
@@ -202,6 +232,16 @@ class Output(BaseModel):
     )
     max_items: int | None = Field(default=None, description="Cap on list length; the result also reports the count.")
     clip: int = Field(default=400, description="Longest string kept, in characters.")
+    transforms: dict[str, str] = Field(
+        default={}, description="Output name (a key of fields) -> output transform, e.g. {'day': 'unix->date'}."
+    )
+
+    @field_validator("transforms")
+    @classmethod
+    def _transforms(cls, v: dict[str, str]) -> dict[str, str]:
+        for name in v.values():
+            check_transform(name, transforms.OUTPUT_NAMES)
+        return v
 
 
 class Tool(BaseModel):
@@ -244,6 +284,9 @@ class Plan(BaseModel):
     impersonate: bool = Field(False, description="Use a Chrome TLS fingerprint (sites that block plain clients).")
     concurrency: int = Field(2, ge=1)
     cache_ttl: int = Field(60, ge=0, description="Seconds to cache GET responses.")
+    timezone: str = Field(
+        "", description="IANA zone for date transforms, e.g. 'Asia/Tehran'; empty means system local."
+    )
     author: str = ""
     repository: str = Field("", description="https://github.com/<owner>/<repo> if known.")
     tools: list[Tool] = []
@@ -267,6 +310,11 @@ class Plan(BaseModel):
     @classmethod
     def _repository(cls, v: str) -> str:
         return check_repository(v)
+
+    @field_validator("timezone")
+    @classmethod
+    def _timezone(cls, v: str) -> str:
+        return check_timezone(v)
 
     @property
     def package(self) -> str:

@@ -195,6 +195,46 @@ def test_generated_tests_pass(project):
     assert "2 passed, 3 deselected" in r.stdout
 
 
+def test_transforms_in_generated_code(tmp_path):
+    source = Source(
+        kind="openapi",
+        title="Demo",
+        base_url="https://api.demo.test/v1",
+        endpoints=[Endpoint(id="days", method="GET", path="/days", response_example={"day": "2026-10-20"})],
+    )
+    tool = Tool(
+        name="demo_day",
+        title="Day",
+        description="The day.",
+        endpoint="days",
+        args=[_arg(name="since", description="From, Jalali.", required=True, transform="jalali->unix")],
+        output=Output(fields={"day": "day"}, transforms={"day": "date->jalali"}),
+        example={"since": "1405/07/28"},
+    )
+    plan = PLAN.model_copy(update={"tools": [tool], "timezone": "Asia/Tehran"})
+    out = tmp_path / "demo-mcp"
+    generate(plan, out, source)
+    code = (out / "src/demo_mcp/server.py").read_text(encoding="utf-8")
+    assert 'TZ = "Asia/Tehran"' in code and 'transform_in("jalali->unix", since, TZ)' in code
+    (out / "tests/test_transformed.py").write_text(
+        "import json\n\nimport pytest\n\npytestmark = pytest.mark.anyio\n\n\n"
+        "async def test_output(client, replay):\n    replay('demo_day')\n"
+        "    result = await client.call_tool('demo_day', {'since': '1405/07/28'})\n"
+        "    assert json.loads(result.content[0].text) == {'day': '1405/07/28'}\n",
+        encoding="utf-8",
+    )
+    env = {k: v for k, v in os.environ.items() if not k.startswith("DEMO_MCP")} | {"PYTHONPATH": str(out / "src")}
+    r = subprocess.run(
+        [sys.executable, "-m", "pytest", str(out / "tests"), "-q", "-p", "no:cacheprovider"],
+        cwd=out,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "2 passed" in r.stdout
+
+
 def test_endpoint_without_source(tmp_path):
     plan = PLAN.model_copy(update={"tools": [PLAN.tools[2].model_copy(update={"endpoint": "post /things"})]})
     generate(plan, tmp_path / "a")
@@ -288,6 +328,12 @@ def test_generate_refuses_invalid_plan(tmp_path, plan, needle):
     assert not (tmp_path / "out").exists()
 
 
+def test_generate_refuses_browser_auth(tmp_path):
+    plan = PLAN.model_copy(update={"auth": AuthScheme(name="b", type="browser", login_path="/Account/Login")})
+    with pytest.raises(ValueError, match="browser"):
+        generate(plan, tmp_path / "out")
+
+
 def test_dates_become_strings(tmp_path):
     day = datetime.date(2024, 1, 2)
     plan = _tool_plan(args=[_arg(name="since", default=day, to="query.since")], example={"since": day})
@@ -322,3 +368,8 @@ def test_templates(project):
     assert (
         (project / "README.md").read_text(encoding="utf-8").startswith("<!-- mcp-name: io.github.someone/demo-mcp -->")
     )
+
+
+def test_generated_dependency_floor(tmp_path):
+    generate(PLAN, tmp_path / "a", SOURCE)
+    assert '"mcpsmith>=0.2"' in (tmp_path / "a/pyproject.toml").read_text(encoding="utf-8")

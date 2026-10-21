@@ -10,12 +10,14 @@ import asyncio
 import base64
 import copy
 import functools
+import hashlib
 import json
 import logging
 import os
 import random
 import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -24,7 +26,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 log = logging.getLogger("mcpsmith")
 
-AUTH_TYPES = {"bearer", "header", "query", "cookie", "basic"}
+AUTH_TYPES = {"bearer", "header", "query", "cookie", "basic", "browser"}
 IDEMPOTENT = {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
 
 
@@ -78,8 +80,12 @@ class Api:
         impersonate: bool = False,
         concurrency: int = 2,
         cache_ttl: int = 60,
+        secret: Callable[[str], str | None] | None = None,
+        cookie_provider: Callable[[str], Awaitable[dict[str, str]]] | None = None,
+        login_path: str = "",
+        proxy: str | None = None,
     ):
-        if auth and (auth.get("type") not in AUTH_TYPES or not auth.get("env")):
+        if auth and (auth.get("type") not in AUTH_TYPES or not (auth.get("env") or auth.get("type") == "browser")):
             raise ValueError(f"auth needs type (one of {sorted(AUTH_TYPES)}) and env, got {auth!r}")
         if concurrency < 1:
             raise ValueError(f"concurrency must be at least 1, got {concurrency}")
@@ -91,6 +97,10 @@ class Api:
         self.impersonate = impersonate
         self.concurrency = concurrency
         self.cache_ttl = cache_ttl
+        self.secret = secret
+        self.cookie_provider = cookie_provider
+        self.login_path = login_path
+        self.proxy = proxy
         self._transport: httpx.AsyncBaseTransport | None = None
         self._client: httpx.AsyncClient | None = None
         self._limit: asyncio.Semaphore | None = None
@@ -126,8 +136,17 @@ class Api:
         host = httpx.URL(url).host
         if host not in self.hosts:
             raise ApiError(f"Refusing to call unexpected host {host}.")
+        sent = False
         if host == httpx.URL(self.base_url).host:  # other allowlisted hosts never see the credential
-            self._add_auth(query, headers, cookies)
+            sent = self._add_auth(query, headers, cookies)
+            if self.auth and self.auth["type"] == "browser" and self.cookie_provider:
+                try:
+                    cookies.update(await self.cookie_provider(host))
+                except (OSError, httpx.HTTPError, RuntimeError):
+                    raise ApiError(
+                        "The mcpsmith Chrome is not running. Start it with `mcpsmith browser`, log in, then retry."
+                    ) from None
+                sent = True
         if any(re.search(r"[;\r\n]", str(v)) for v in cookies.values()) or any(
             re.search(r"[\r\n]", str(v)) for v in headers.values()
         ):
@@ -136,7 +155,8 @@ class Api:
             headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
         payload = None if method == "GET" else _nest(body) if isinstance(body, dict) else body
 
-        key = (url, json.dumps([query, headers], sort_keys=True, default=str))
+        shown = {k: hashlib.sha256(v.encode()).hexdigest() if k == "Cookie" else v for k, v in headers.items()}
+        key = (url, json.dumps([query, shown], sort_keys=True, default=str))
         cached = method == "GET" and self.cache_ttl > 0
         if cached and (hit := self._cache.get(key)) and time.monotonic() - hit[0] < self.cache_ttl:
             return copy.deepcopy(hit[1])
@@ -157,8 +177,12 @@ class Api:
                 continue
             break
 
+        if self.auth and self.auth["type"] == "browser" and sent and self._expired(r):
+            raise ApiError(
+                f"{host} says the session has expired. Log in again in the mcpsmith Chrome window, then retry."
+            )
         if r.status_code >= 300:
-            raise ApiError(self._status_message(r, content, host), r.status_code)
+            raise ApiError(self._status_message(r, content, host, sent), r.status_code)
         if not content:
             return {"status": r.status_code}
         try:
@@ -172,6 +196,13 @@ class Api:
             self._cache[key] = (time.monotonic(), copy.deepcopy(data))
         return data
 
+    def _expired(self, r: httpx.Response) -> bool:
+        """A 401, or a redirect to the site's login page."""
+        loc = httpx.URL(r.headers.get("location", "")).path
+        return r.status_code == 401 or (
+            300 <= r.status_code < 400 and bool(self.login_path) and loc.startswith(self.login_path)
+        )
+
     def _url(self, url: str, path: dict[str, Any]) -> str:
         def fill(m: re.Match) -> str:
             if m.group(1) not in path:
@@ -183,13 +214,18 @@ class Api:
         url = re.sub(r"\{([^{}]+)\}", fill, url)
         return url if url.startswith(("http://", "https://")) else f"{self.base_url}/{url.lstrip('/')}"
 
-    def _add_auth(self, query: dict, headers: dict, cookies: dict) -> None:
-        if not self.auth:
-            return
+    def _credential(self, env: str) -> str:
+        """The environment variable first, then the keychain-backed `secret` callback."""
+        return (os.environ.get(env) or (self.secret and self.secret(env)) or "").strip()
+
+    def _add_auth(self, query: dict, headers: dict, cookies: dict) -> bool:
+        """Add the credential; True when one was sent. Read once: a `once` secret is gone after this."""
+        if not self.auth or self.auth["type"] == "browser":
+            return False
         env, kind, param = self.auth["env"], self.auth["type"], self.auth.get("param", "")
-        secret = os.environ.get(env, "").strip()
+        secret = self._credential(env)
         if not secret:
-            return  # public endpoints still work; a 401 then names the variable to set
+            return False  # public endpoints still work; a 401 then names the variable to set
 
         if kind == "bearer":
             headers["Authorization"] = f"Bearer {secret}"
@@ -197,9 +233,12 @@ class Api:
             headers["Authorization"] = "Basic " + base64.b64encode(secret.encode()).decode()
         else:
             {"header": headers, "query": query, "cookie": cookies}[kind][param] = secret
+        return True
 
     def _proxies(self) -> list[str]:
-        """<P>_PROXY: one proxy URL, or a comma-separated list used one at a time."""
+        """An explicit `proxy`, else <P>_PROXY: one proxy URL, or a comma-separated list used one at a time."""
+        if self.proxy:
+            return [self.proxy]
         return [p.strip() for p in os.environ.get(f"{self.env_prefix}_PROXY", "").split(",") if p.strip()]
 
     def _next_proxy(self, client: httpx.AsyncClient) -> None:
@@ -273,10 +312,10 @@ class Api:
                 raise ApiError(f"{host} sent a response over {self.MAX_BODY // 1_000_000} MB; refused.", r.status_code)
         return bytes(buf)
 
-    def _status_message(self, r: httpx.Response, content: bytes, host: str) -> str:
-        code, env = r.status_code, self.auth["env"] if self.auth else None
+    def _status_message(self, r: httpx.Response, content: bytes, host: str, sent: bool) -> str:
+        code, env = r.status_code, self.auth.get("env") if self.auth else None
         if code == 401:
-            if env and not os.environ.get(env, "").strip():
+            if env and not sent:
                 return f"{host} requires authentication (HTTP 401). Set {env} to your API credential and restart."
             if env:
                 return f"{host} rejected the credentials (HTTP 401). Check that {env} holds a valid, unexpired value."

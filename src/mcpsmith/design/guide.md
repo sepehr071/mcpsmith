@@ -26,6 +26,9 @@ descriptions, argument descriptions and the shaped output. Design for that reade
 - Argument names are plain English the agent would guess: `query`, `category_id`, `min_price`, `page`,
   `sort`, not wire names like `q`, `cat`, `filters.minPrice`, `pg`. The wire name goes in `to`.
 - Output field names are plain too: `price` not `prc_v2`, `rating_count` not `rc`.
+- Rename cryptic wire names; never expose them. Convert formats with transforms instead of asking the model to
+  compute: unix times, minute counts and currency units go through `Output.transforms`, dates the API wants as
+  unix time through `ToolArg.transform` (see the plan field reference).
 
 ## Write descriptions
 
@@ -86,17 +89,27 @@ Raw API responses waste the agent's context and bury the answer. For every tool:
 
 Plan: `name` (e.g. `petstore-mcp`), `title`, `description` (<= 100 chars), `instructions`, `prefix` (tool name
 prefix, e.g. `pet`), `version`, `base_url`, `env_prefix` (upper case, `^[A-Z][A-Z0-9_]*$`, ending in `_MCP`; `auth.env` must start with it; e.g.
-`PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic, param, env}`),
-`impersonate`, `concurrency`, `cache_ttl`, `author`, `repository`, `tools`.
+`PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic|browser, param, env, login_path}`;
+`browser` and `login_path` only work in the hub, not in exported servers: `browser` reuses the developer's
+logged-in shared Chrome session, `login_path` is the path prefix the site redirects to when logged out, e.g.
+`/login`; `generate` refuses browser-auth plans, switch to bearer/header/cookie auth to export),
+`impersonate`, `concurrency`, `cache_ttl`, `timezone` (IANA name for date transforms; empty = system local),
+`author`, `repository`, `tools`.
 
 Tool: `name`, `title`, `description`, `endpoint` (an endpoint id from the digest), `args`, `fixed`
 (target -> constant), `output`, `read_only`, `example` (arg name -> value).
 
 ToolArg: `name` (Python identifier, not a keyword), `type` (string|integer|number|boolean|array|object),
 `description`, `required`, `default`, `enum`, `map` (friendly value -> wire value), `minimum`, `maximum`,
-`to` (target).
+`to` (target), `transform` (input transform name, see below).
 
-Output: `root`, `fields`, `max_items`, `clip`.
+Output: `root`, `fields`, `max_items`, `clip`, `transforms` (output name in `fields` -> transform name, see below).
+
+Transforms convert between what a model passes or reads and the API's wire format. Dates are `YYYY-MM-DD`
+(Gregorian) or `YYYY/MM/DD` (Jalali, Latin or Persian digits, years 1300-1500); day boundaries use `timezone`;
+`*_end` is 23:59:59 of that day. Input (`ToolArg.transform`): `date->unix`, `date->unix_end`, `jalali->unix`,
+`jalali->unix_end`, `jalali->date`, `date->jalali`, `toman->rial`, `int->str`. Output (`Output.transforms`):
+`unix->date`, `unix->datetime`, `date->jalali`, `jalali->date`, `rial->toman`, `minutes->hh:mm`.
 
 Target syntax (`ToolArg.to`, keys of `Tool.fixed`): `path.<name>`, `query.<name>`, `header.<name>`,
 `cookie.<name>`, `body` (the whole JSON body is the value), `body.<a.b.c>` (nested key in the JSON body).

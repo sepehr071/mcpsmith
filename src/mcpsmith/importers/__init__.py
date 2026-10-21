@@ -1,4 +1,4 @@
-"""Read an OpenAPI 3.x / Swagger 2.0 spec or a HAR recording (JSON or YAML, file or URL) into a Source."""
+"""Read an OpenAPI 3.x / Swagger 2.0 spec a HAR recording or an REA browser-scenario capture (JSON or YAML, file or URL) into a Source."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 import httpx
 import yaml
 
-from mcpsmith.importers import har, openapi
+from mcpsmith.importers import har, openapi, rea
 from mcpsmith.model import Source
 
 
@@ -29,6 +29,9 @@ def load(path_or_url: str, hosts: list[str] | None = None) -> Source:
         raise ValueError(f"{path_or_url}: not a JSON/YAML object")
     if isinstance(doc.get("log"), dict) and "entries" in doc["log"]:
         return har.parse(doc, hosts=hosts)
+    # REA scenario capture: evidence wrapper with predicate_type "rea.browser-scenario-capture" and normalized_result.events.items
+    if doc.get("predicate_type") == "rea.browser-scenario-capture" and "events" in (doc.get("normalized_result") or {}):
+        return har.parse(rea.to_har(doc), hosts=hosts)
     if "openapi" in doc or "swagger" in doc:
         return openapi.parse(doc, origin=origin)
     raise ValueError(f"{path_or_url}: neither OpenAPI/Swagger (no 'openapi'/'swagger' key) nor HAR (no log.entries)")
