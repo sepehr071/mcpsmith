@@ -6,7 +6,7 @@ from keyring.errors import PasswordDeleteError
 
 from mcpsmith import secrets
 from mcpsmith.cli import main
-from mcpsmith.runtime import Api
+from mcpsmith.runtime import Api, ApiError
 
 pytestmark = pytest.mark.anyio
 
@@ -103,3 +103,26 @@ async def test_api_uses_secret_when_env_unset(monkeypatch):
     monkeypatch.setenv("X_MCP_TOKEN", "fromenv")
     await api.call("GET", "/y")
     assert seen[-1].headers["authorization"] == "Bearer fromenv"
+
+
+async def test_once_secret_401_reports_rejected_and_is_not_reread(monkeypatch):
+    monkeypatch.delenv("X_MCP_TOKEN", raising=False)
+    secrets.set("shop", "X_MCP_TOKEN", "otp", once=True)
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(401)
+
+    api = Api(
+        base_url="https://api.example.com",
+        env_prefix="X_MCP",
+        auth={"type": "bearer", "env": "X_MCP_TOKEN"},
+        secret=lambda n: secrets.get("shop", n),
+    )
+    api.RETRY_DELAY = 0
+    api.set_transport(httpx.MockTransport(handler))
+    with pytest.raises(ApiError, match="rejected the credentials"):
+        await api.call("GET", "/x")
+    assert seen[0].headers["authorization"] == "Bearer otp"
+    assert secrets.get("shop", "X_MCP_TOKEN") is None

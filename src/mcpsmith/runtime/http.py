@@ -129,8 +129,9 @@ class Api:
         host = httpx.URL(url).host
         if host not in self.hosts:
             raise ApiError(f"Refusing to call unexpected host {host}.")
+        sent = False
         if host == httpx.URL(self.base_url).host:  # other allowlisted hosts never see the credential
-            self._add_auth(query, headers, cookies)
+            sent = self._add_auth(query, headers, cookies)
         if any(re.search(r"[;\r\n]", str(v)) for v in cookies.values()) or any(
             re.search(r"[\r\n]", str(v)) for v in headers.values()
         ):
@@ -161,7 +162,7 @@ class Api:
             break
 
         if r.status_code >= 300:
-            raise ApiError(self._status_message(r, content, host), r.status_code)
+            raise ApiError(self._status_message(r, content, host, sent), r.status_code)
         if not content:
             return {"status": r.status_code}
         try:
@@ -190,13 +191,14 @@ class Api:
         """The environment variable first, then the keychain-backed `secret` callback."""
         return (os.environ.get(env) or (self.secret and self.secret(env)) or "").strip()
 
-    def _add_auth(self, query: dict, headers: dict, cookies: dict) -> None:
+    def _add_auth(self, query: dict, headers: dict, cookies: dict) -> bool:
+        """Add the credential; True when one was sent. Read once: a `once` secret is gone after this."""
         if not self.auth:
-            return
+            return False
         env, kind, param = self.auth["env"], self.auth["type"], self.auth.get("param", "")
         secret = self._credential(env)
         if not secret:
-            return  # public endpoints still work; a 401 then names the variable to set
+            return False  # public endpoints still work; a 401 then names the variable to set
 
         if kind == "bearer":
             headers["Authorization"] = f"Bearer {secret}"
@@ -204,6 +206,7 @@ class Api:
             headers["Authorization"] = "Basic " + base64.b64encode(secret.encode()).decode()
         else:
             {"header": headers, "query": query, "cookie": cookies}[kind][param] = secret
+        return True
 
     def _proxies(self) -> list[str]:
         """<P>_PROXY: one proxy URL, or a comma-separated list used one at a time."""
@@ -280,10 +283,10 @@ class Api:
                 raise ApiError(f"{host} sent a response over {self.MAX_BODY // 1_000_000} MB; refused.", r.status_code)
         return bytes(buf)
 
-    def _status_message(self, r: httpx.Response, content: bytes, host: str) -> str:
+    def _status_message(self, r: httpx.Response, content: bytes, host: str, sent: bool) -> str:
         code, env = r.status_code, self.auth["env"] if self.auth else None
         if code == 401:
-            if env and not self._credential(env):
+            if env and not sent:
                 return f"{host} requires authentication (HTTP 401). Set {env} to your API credential and restart."
             if env:
                 return f"{host} rejected the credentials (HTTP 401). Check that {env} holds a valid, unexpired value."
