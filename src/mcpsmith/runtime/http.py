@@ -16,12 +16,14 @@ import logging
 import os
 import random
 import re
+import ssl
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 from urllib.parse import quote
 
 import httpx
+import truststore
 from mcp.server.mcpserver.exceptions import ToolError
 
 log = logging.getLogger("mcpsmith")
@@ -36,6 +38,12 @@ class ApiError(ToolError):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+
+
+@functools.cache
+def tls_context() -> ssl.SSLContext:
+    """Verify with the OS trust store (fixes incomplete chains, honors corporate CAs); verification stays on."""
+    return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
 
 
 @functools.cache
@@ -283,7 +291,9 @@ class Api:
                 proxy=proxy,
                 max_connections=2 * self.concurrency,
             )
-        return httpx.AsyncHTTPTransport(proxy=proxy, limits=httpx.Limits(max_connections=2 * self.concurrency))
+        return httpx.AsyncHTTPTransport(
+            verify=tls_context(), proxy=proxy, limits=httpx.Limits(max_connections=2 * self.concurrency)
+        )
 
     async def _request(self, method, url, query, headers, payload, host) -> tuple[httpx.Response, bytes]:
         client, limit = self._get_client()

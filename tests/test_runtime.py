@@ -1,8 +1,10 @@
 import json
+import ssl
 from typing import Annotated
 
 import httpx
 import pytest
+import truststore
 from mcp import Client
 from pydantic import Field
 
@@ -351,3 +353,10 @@ async def test_browser_auth_cookie_errors_map_to_not_running(exc):
     api = make_api(lambda r: httpx.Response(200, json={}), auth={"type": "browser"}, cookie_provider=down)
     with pytest.raises(ApiError, match="The mcpsmith Chrome is not running"):
         await api.call("GET", "/x")
+
+
+def test_plain_transport_verifies_with_os_trust_store():
+    transport = Api(base_url="https://api.example.com", env_prefix="EX_MCP")._make_transport(None)
+    ctx = transport._pool._ssl_context
+    assert isinstance(ctx, truststore.SSLContext) and ctx is http.tls_context()
+    assert ctx.verify_mode == ssl.CERT_REQUIRED

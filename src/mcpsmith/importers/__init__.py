@@ -10,13 +10,14 @@ import yaml
 
 from mcpsmith.importers import har, openapi, rea
 from mcpsmith.model import Source
+from mcpsmith.runtime.http import tls_context
 
 
 def load(path_or_url: str, hosts: list[str] | None = None) -> Source:
     """`hosts` filters HAR traffic to those hosts (exact or subdomain); ignored for OpenAPI."""
     origin = None
     if path_or_url.startswith(("http://", "https://")):
-        resp = httpx.get(path_or_url, follow_redirects=True, timeout=60)
+        resp = httpx.get(path_or_url, follow_redirects=True, timeout=60, verify=tls_context())
         resp.raise_for_status()
         text, origin = resp.text, str(resp.url)
     else:
