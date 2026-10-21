@@ -195,6 +195,23 @@ def cmd_browser(args) -> int:
     return 0
 
 
+def cmd_connections(args) -> int:
+    from mcp.server import MCPServer
+
+    from .hub import Hub
+
+    hub = Hub(MCPServer("mcpsmith"))
+    hub.load_all()
+    for c in hub.connections():
+        print(
+            f"{c['name']}: "
+            + (f"{len(c['tools'])} tools, auth {c['auth'] or 'none'}" if c["ok"] else f"NOT LOADED ({c['warning']})")
+        )
+    if not hub.connections():
+        print("(none)")
+    return 0
+
+
 def cmd_mcp(args) -> int:
     from .server import main as serve
 
@@ -262,6 +279,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int, default=9222)
     sp.add_argument("--no-proxy", action="store_true", help="do not pass HTTPS_PROXY on to Chrome")
 
+    command("connections", cmd_connections, "list the connections saved for the mcpsmith server", workdir=False)
     command("guide", cmd_guide, "print the tool-design rules for plan.yaml", workdir=False)
     command("mcp", cmd_mcp, "run the mcpsmith MCP server on stdio", workdir=False)
     return p

@@ -133,6 +133,11 @@ async def test_server_tools(client, spec, tmp_path):
         "smith_check",
         "smith_record_start",
         "smith_record_stop",
+        "smith_connect",
+        "smith_disconnect",
+        "smith_connections",
+        "smith_tools",
+        "smith_call",
     }
     assert tools["smith_validate"].annotations.read_only_hint is True
 
@@ -157,3 +162,9 @@ async def test_server_errors_reach_the_agent(tmp_path):
     async with Client(server.mcp) as c:
         result = await c.call_tool("smith_draft", {"workdir": str(tmp_path / "missing")})
     assert result.is_error and "FileNotFoundError" in result.content[0].text and "source.json" in result.content[0].text
+
+
+def test_connections_command(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("MCPSMITH_HOME", str(tmp_path))
+    assert main(["connections"]) == 0
+    assert "(none)" in capsys.readouterr().out
