@@ -225,6 +225,16 @@ def test_browser_auth_warns():
     assert any(i.level == "warning" and "token" in i.message for i in issues)
 
 
+def test_session_cookie_validation():
+    plan = valid_plan()
+    plan.auth = AuthScheme(name="b", type="browser", login_path="/Login")
+    assert any(i.level == "warning" and "session_cookie" in i.message for i in validate(plan))
+    plan.auth.session_cookie = "sid"
+    assert not [i for i in validate(plan) if "session_cookie" in i.message]
+    plan.auth = AuthScheme(name="t", type="bearer", env="EX_MCP_TOKEN", session_cookie="sid")
+    assert any("only applies to browser" in e.message for e in _errors(plan))
+
+
 def test_plan_schema_and_new_fields():
     assert "transform" in Plan.model_json_schema()["$defs"]["ToolArg"]["properties"]
     plan = valid_plan()

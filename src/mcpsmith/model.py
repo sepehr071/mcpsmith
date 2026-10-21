@@ -150,6 +150,10 @@ class AuthScheme(BaseModel):
     login_path: str = Field(
         "", description="Browser auth: path prefix whose redirect means logged out, e.g. '/Account/Login'."
     )
+    session_cookie: str = Field(
+        "",
+        description="Browser auth: name of the cookie that proves the user is logged in; absent means session ended.",
+    )
 
     @field_validator("env")
     @classmethod

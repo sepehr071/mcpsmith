@@ -49,7 +49,7 @@ Safety and server
 - `example` for every tool with required args; real values that return data.
 - `instructions`: the cross-tool workflow ("search, then details by id"), units, currency, language, rate limits, limits of the data.
 - Secrets only via env vars (`<P>_...`) or `mcpsmith secret set`, never in args or descriptions.
-- Site that needs the user's login: `auth: {type: browser, login_path: /login}` (hub only; `login_path` is where the site redirects when logged out). `generate` refuses it: switch to token auth to export.
+- Site that needs the user's login: `auth: {type: browser, login_path: /login}` (hub only; `login_path` is where the site redirects when logged out). Also set `session_cookie`, the login cookie's name: compare the cookie NAMES Chrome holds logged in vs logged out (`mcpsmith.browser.cookies_for`, names only, never print values). Some sites answer an ended session with HTTP 200 and an empty body. `generate` refuses it: switch to token auth to export.
 
 ## Measure
 

@@ -89,10 +89,12 @@ Raw API responses waste the agent's context and bury the answer. For every tool:
 
 Plan: `name` (e.g. `petstore-mcp`), `title`, `description` (<= 100 chars), `instructions`, `prefix` (tool name
 prefix, e.g. `pet`), `version`, `base_url`, `env_prefix` (upper case, `^[A-Z][A-Z0-9_]*$`, ending in `_MCP`; `auth.env` must start with it; e.g.
-`PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic|browser, param, env, login_path}`;
+`PETSTORE_MCP`), `headers`, `auth` (`{name, type: bearer|header|query|cookie|basic|browser, param, env, login_path, session_cookie}`;
 `browser` and `login_path` only work in the hub, not in exported servers: `browser` reuses the developer's
 logged-in shared Chrome session, `login_path` is the path prefix the site redirects to when logged out, e.g.
-`/login`; `generate` refuses browser-auth plans, switch to bearer/header/cookie auth to export),
+`/login`; `session_cookie` is the name of the cookie that proves the login (some sites answer an ended session with
+HTTP 200 and an empty body, so no redirect shows it; find it by comparing the cookie names Chrome holds logged in vs
+logged out, never their values); `generate` refuses browser-auth plans, switch to bearer/header/cookie auth to export),
 `impersonate`, `concurrency`, `cache_ttl`, `timezone` (IANA name for date transforms; empty = system local),
 `author`, `repository`, `tools`.
 

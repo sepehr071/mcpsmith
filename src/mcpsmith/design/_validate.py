@@ -119,6 +119,13 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
     check("plan.timezone", check_timezone, plan.timezone)
     if plan.auth and plan.auth.type == "browser":
         warn("plan.auth", "browser auth needs the hub's Chrome; switch to token auth before exporting.")
+        if not plan.auth.session_cookie:
+            warn(
+                "plan.auth.session_cookie",
+                "set auth.session_cookie so an ended session is reported instead of returning empty data.",
+            )
+    elif plan.auth and plan.auth.session_cookie:
+        err("plan.auth.session_cookie", "session_cookie only applies to browser auth.")
     if len(plan.tools) > 20:
         warn("plan.tools", f"{len(plan.tools)} tools; merge near-duplicates and drop noise to stay at 20 or fewer.")
 
