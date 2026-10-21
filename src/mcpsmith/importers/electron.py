@@ -28,7 +28,7 @@ WRAPPERS = {"encodeURIComponent", "encodeURI", "String", "Number", "toString", "
 HELPER = re.compile(rf"""(?<![\w$])(?:[\w$]+\.)*[\w$]+\s*\(\s*(['"`])({VERBS})\1\s*,""")  # request('GET', path, opts)
 FETCH = re.compile(r"(?<![\w$])(?:[\w$]+\.)*fetch\s*\(")
 AXIOS = re.compile(r"(?<![\w$])axios\.(get|post|put|patch|delete|head|options)\s*\(")
-METHOD_KEY = re.compile(r"""\bmethod\s*:\s*(['"`])([A-Za-z]+)\1""")
+METHOD_KEY = re.compile(r"""(?<![\w$])['"]?method['"]?\s*:\s*(['"`])([A-Za-z]+)\1""")
 HEADERS_KEY = re.compile(r"\bheaders\s*:\s*\{")
 HEADER_PAIR = re.compile(r"""(?:(['"])([\w-]+)\1|([\w-]+))\s*:\s*(['"])((?:\\.|(?!\4).)*)\4""")
 
@@ -66,7 +66,7 @@ def read_app(
         found = []
         for root, dirs, names in os.walk(path):  # node_modules is pruned here, never walked
             dirs[:] = [d for d in dirs if d != "node_modules"]
-            found += [Path(root, n) for n in names if Path(n).suffix in EXTS | {".map"}]
+            found += [Path(root, n) for n in names if Path(n).suffix in EXTS | {".map"} and Path(root, n).is_file()]
         entries = [(p.relative_to(path).as_posix(), p.stat().st_size, p.read_bytes) for p in sorted(found)]
     elif path.suffix == ".asar":
         entries = _asar_entries(path)
@@ -316,7 +316,11 @@ def _endpoint(
             method = "GET"  # fetch's own default
         elif opts.startswith("{") and (m := METHOD_KEY.search(opts)):
             method = m.group(2).upper()
-        elif opts.startswith("{") and "..." not in opts and not re.search(r"\bmethod\s*[:,}]", opts):
+        elif (
+            opts.startswith("{")
+            and "..." not in opts
+            and not re.search(r"""(?<![\w$])['"]?method['"]?\s*[:,}]""", opts)
+        ):
             method = "GET"  # no method key at all; a `method: m` or `{method}` is not a literal, so it stays unread
         else:
             method = ""

@@ -234,6 +234,29 @@ def test_fetch_with_a_non_literal_method_is_unreadable():
     assert "{u}" not in {e.path for e in s.endpoints}
 
 
+def test_quoted_method_key_is_read_not_guessed():
+    code = """fetch('/a', { "method": m })
+fetch('/b', { 'method': 'DELETE' })
+fetch('/c', { "method": "post", body })"""
+    s = electron.parse_sources({"q.js": code})
+    assert {(e.path, e.method) for e in s.endpoints} == {("/a", ""), ("/b", "DELETE"), ("/c", "POST")}
+
+
+def test_dangling_symlink_is_skipped(tmp_path):
+    (tmp_path / "ok.js").write_text("axios.get('/ok')", encoding="utf-8")
+    try:
+        (tmp_path / "gone.js").symlink_to(tmp_path / "missing.js")
+    except (OSError, NotImplementedError):
+        pytest.skip("cannot create symlinks here")
+    assert set(electron.read_app(tmp_path)) == {"ok.js"}
+
+
+def test_userinfo_with_an_at_in_the_password_is_stripped():
+    assert electron.strip_userinfo("https://u:p@ss@api.demo.test/x") == "https://api.demo.test/x"
+    assert electron.parse_sources({}, "https://u:p@ss@api.demo.test").base_url == "https://api.demo.test"
+    assert android.parse_interface("class X {}", "https://u:p@ss@api.demo.test").base_url == "https://api.demo.test"
+
+
 def test_comment_stripping_is_linear():
     start = time.perf_counter()
     for text, expected in ((" /*" * 200_000, 0), (" //" * 200_000, 1), ("/* " + "*" * 400_000, 0)):

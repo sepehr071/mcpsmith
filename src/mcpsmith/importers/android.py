@@ -31,7 +31,7 @@ NOT_APP_TYPE = ("java.", "javax.", "android.", "kotlin.", "okhttp3.")
 
 def strip_userinfo(url: str) -> str:
     """`url` without a `user:pass@` before the host."""
-    return re.sub(r"^([a-zA-Z][\w+.-]*://)[^/@?#]*@", r"\1", url)
+    return re.sub(r"^([a-zA-Z][\w+.-]*://)[^/?#]*@", r"\1", url)  # greedy: up to the last @ of the authority
 
 
 def parse_interface(
