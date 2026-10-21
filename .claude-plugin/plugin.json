@@ -1,7 +1,7 @@
 {
   "name": "mcpsmith",
   "displayName": "mcpsmith",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "description": "Turn an OpenAPI file or a recorded website session into a curated, tested MCP server. Skills and an MCP server for your coding agent.",
   "author": {
     "name": "Sepehr Radmard",
@@ -23,7 +23,23 @@
     "mcpsmith": {
       "command": "uvx",
       "args": [
-        "mcpsmith@0.2.2",
+        "mcpsmith@0.3.0",
+        "mcp"
+      ]
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@1.11.0",
+        "--browser-url=http://127.0.0.1:9222"
+      ]
+    },
+    "rea": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "rea-agents@6.7.0",
         "mcp"
       ]
     }

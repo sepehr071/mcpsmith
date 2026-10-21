@@ -5,6 +5,8 @@ description: Build a curated, tested MCP server (agent tools) with mcpsmith. Use
 
 # Build an MCP server with mcpsmith
 
+Not set up yet? `uvx mcpsmith setup` registers mcpsmith, Chrome DevTools MCP and REA with the user's agents.
+
 mcpsmith turns an OpenAPI file or a recorded website session (HAR) into a Python MCP server project with tests, CI, a publish workflow and a Claude Code plugin. You design the tools; mcpsmith generates and checks the code.
 
 Run commands with `uvx mcpsmith <cmd>` (or `mcpsmith <cmd>` if installed). No shell? Use the mcpsmith MCP tools instead: `smith_guide`, `smith_inspect`, `smith_draft`, `smith_validate`, `smith_generate`, `smith_check`, and the hub tools `smith_record_start`, `smith_record_stop`, `smith_connect`, `smith_disconnect`, `smith_connections`, `smith_tools`, `smith_call` (paths absolute).
