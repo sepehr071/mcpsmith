@@ -53,10 +53,12 @@ async def test_probe_verifies_get_and_scrubs():
     assert ep.verified and "secret123" not in json.dumps(ep.response_example)
     assert "a@b.co" not in json.dumps(ep.response_example)
 
+
 def test_probe_skips_unfillable_path_and_writes():
     r = {x.endpoint: x for x in probe.run(src)}
     assert "placeholder" in r["GET /items/{id}"].skipped_reason
     assert "write" in r["POST /items"].skipped_reason and src.endpoint("POST /items").verified is False
+
 
 def test_probe_stops_host_on_429():
     # first GET -> 429; the second GET on the same host is skipped, not sent
