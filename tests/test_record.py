@@ -104,3 +104,43 @@ async def test_start_without_chrome():
     with pytest.raises(RuntimeError, match="mcpsmith browser"):
         await Recorder().start("x", [])
     assert browser.status() is None
+
+
+@pytest.mark.anyio
+async def test_existing_tab_recorded_once_and_login_scrubbed(hub_home):
+    responses = {
+        "Target.getTargets": {"targetInfos": [{"type": "page", "targetId": "t1", "attached": True}]},
+        "Target.attachToTarget": {"sessionId": "s9"},
+        "Network.getResponseBody": {"body": json.dumps({"access_token": "TOKEN123", "ok": 1}), "base64Encoded": False},
+    }
+    with FakeCdp(responses) as fake:
+        (hub_home / "browser.json").write_text(json.dumps({"port": fake.port, "proxy": None}))
+        rec = Recorder()
+        await rec.start("login", ["shop.test"])
+        assert ("Network.enable", {}, "s9") in fake.calls
+        # same target announced by auto-attach too: no second session
+        fake.emit("Target.attachedToTarget", {"sessionId": "s2", "targetInfo": {"type": "page", "targetId": "t1"}})
+        await asyncio.sleep(0.2)
+        assert sum(c[0] == "Network.enable" for c in fake.calls) == 1
+        req = {
+            "url": "https://api.shop.test/login",
+            "method": "POST",
+            "headers": {"Content-Type": "application/x-www-form-urlencoded"},
+            "postData": "user=bob&password=hunter2xyz",
+        }
+        fake.emit("Network.requestWillBeSent", {"requestId": "1", "request": req, "type": "XHR"}, "s9")
+        done(fake, "1", session="s9")
+        await until(lambda: sum("body" in e for e in rec.entries.values()) == 1)
+        har_path = await rec.stop()
+    text = har_path.read_text()
+    assert "hunter2xyz" not in text and "TOKEN123" not in text
+    assert len(json.loads(text)["log"]["entries"]) == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("name", [".", "..", "a/b", ""])
+async def test_bad_name_rejected(name, hub_home):
+    with FakeCdp() as fake:
+        (hub_home / "browser.json").write_text(json.dumps({"port": fake.port, "proxy": None}))
+        with pytest.raises(ValueError):
+            await Recorder().start(name, [])
