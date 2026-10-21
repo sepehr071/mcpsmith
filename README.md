@@ -6,6 +6,23 @@ Turn an OpenAPI/Swagger file, or a website session you recorded in the browser, 
 
 Most generators mirror every endpoint as a tool and hand the model raw JSON, or stop at an OpenAPI spec or API client. mcpsmith designs a few workflow-level tools with plain argument names, descriptions that say when to call what next, and compact output. The input is an OpenAPI file or a HAR recording, so sites with no public API work too. The output is a server project with tests, CI, a PyPI + MCP Registry publish workflow and a Claude Code plugin.
 
+## Install
+
+```bash
+uvx mcpsmith setup
+```
+
+Registers the `mcpsmith` and `mcpsmith-chrome` (Chrome DevTools) MCP servers and copies the skills into each coding agent it finds (Claude Code, Codex, Cursor, Gemini CLI), and installs REA (`rea-agents`) for them. Options:
+
+- `--dry-run` prints the plan and writes nothing.
+- `--agents claude,codex` limits it to those agents (default: the ones found).
+- `--no-rea` skips REA; `--no-skills` skips the skills; `--yes` skips the confirmation.
+- `--remove` undoes what setup did. Entries and skill folders you made yourself are left alone. REA stays installed (you may have had it before); the command prints the line that removes it.
+
+Before setup first changes a config file, it copies the file to `*.mcpsmith.bak`. The backup is made once and not refreshed by later runs. Restart your agents afterwards. Run `mcpsmith browser` before using Chrome DevTools: it starts the shared Chrome the server connects to.
+
+Claude Code plugin users already get all three servers from the plugin and do not need `setup`.
+
 ## Quickstart: OpenAPI
 
 ```bash

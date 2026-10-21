@@ -223,6 +223,12 @@ def cmd_connections(args) -> int:
     return 0
 
 
+def cmd_setup(args) -> int:
+    from .setup.run import cmd
+
+    return cmd(args)
+
+
 def cmd_mcp(args) -> int:
     from .server import main as serve
 
@@ -289,6 +295,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp = command("browser", cmd_browser, "start (or reuse) the shared Chrome you log in with", workdir=False)
     sp.add_argument("--port", type=int, default=9222)
     sp.add_argument("--no-proxy", action="store_true", help="do not pass HTTPS_PROXY on to Chrome")
+
+    sp = command(
+        "setup", cmd_setup, "register mcpsmith, Chrome DevTools MCP and REA with your coding agents", workdir=False
+    )
+    sp.add_argument("--agents", help="comma-separated: claude,codex,cursor,gemini (default: the ones found)")
+    sp.add_argument("--no-rea", action="store_true", help="skip the REA install")
+    sp.add_argument("--no-skills", action="store_true", help="skip copying the skills")
+    sp.add_argument("--dry-run", action="store_true", help="print the plan, write nothing")
+    sp.add_argument("--yes", action="store_true", help="do not ask for confirmation")
+    sp.add_argument("--remove", action="store_true", help="undo what setup did")
 
     command("connections", cmd_connections, "list the connections saved for the mcpsmith server", workdir=False)
     command("guide", cmd_guide, "print the tool-design rules for plan.yaml", workdir=False)

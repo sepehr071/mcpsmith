@@ -4,6 +4,8 @@ Python framework that turns an OpenAPI/Swagger file or a recorded website sessio
 
 ## Workflow
 
+Install for your agents with `uvx mcpsmith setup` (`--dry-run` first).
+
 Ask the user which tasks the server should support, then:
 
 1. Website only: `mcpsmith capture <url> -o site.har --host <host>` (user browses, closes the browser), or use a DevTools HAR export.
