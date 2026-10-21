@@ -1,6 +1,6 @@
 [project]
 name = "mcpsmith"
-version = "0.1.1"
+version = "0.2.0"
 description = "Turn an OpenAPI file or a recorded website session into a curated, tested MCP server, with an LLM designing the tools."
 readme = "README.md"
 license = "MIT"
