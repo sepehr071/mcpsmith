@@ -50,6 +50,8 @@ mcpsmith draft --name example-mcp
 
 While recording, do each thing you want as a tool: search, open a detail page, paginate, apply a filter. Anything you do not click is not in the capture. `--host` (repeatable) keeps only the hosts you list. A DevTools "Save all as HAR" export works in place of `capture`. The recording browser uses `HTTPS_PROXY` when it is set.
 
+A desktop program you own or are authorized to analyze: `mcpsmith app-desktop` prints the steps to record its traffic with your own mitmproxy (`mitmdump --set hardump=capture.har`); `mcpsmith app-desktop capture.har --host api.example.com` imports the result. mcpsmith runs nothing for you, and certificate-pinned programs are out of scope.
+
 A HAR holds everything the browser sent and received, including cookies and your personal data: keep it out of git and delete it after `inspect`. `inspect` scrubs what it keeps: an API key or token becomes an `auth` env var with its value dropped, other secret-looking headers and query params are dropped, and emails, phone numbers, JWTs and values under secret or personal field names are masked in examples and test fixtures. This is pattern-based, so read `tests/fixtures/` before you publish a generated server. If a key is a public one the site sends to every visitor (a search or maps key), you may put it in the tool's `fixed` values.
 
 ## Use it from your agent

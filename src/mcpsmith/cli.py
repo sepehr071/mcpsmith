@@ -89,6 +89,46 @@ def app_js(path: Path, base_url: str, workdir: Path) -> tuple[Source, str]:
     return src, text
 
 
+def desktop_steps(workdir: Path, port: int) -> list[str]:
+    """The commands the developer runs themselves; mcpsmith starts and changes nothing."""
+    proxy = f"http://127.0.0.1:{port}"
+    return [
+        "Only for a program you own or are authorized to analyze. Programs that use certificate pinning are out of scope.",
+        f"Install mitmproxy yourself (https://mitmproxy.org), then run: mitmdump --set hardump={workdir / 'capture.har'} -p {port}",
+        f"Point that one program at {proxy}: its own proxy setting, or start it with HTTPS_PROXY={proxy} "
+        f"(Windows cmd: set HTTPS_PROXY={proxy}; PowerShell: $env:HTTPS_PROXY='{proxy}'; macOS/Linux: HTTPS_PROXY={proxy} ./program). "
+        "Do not change the system-wide proxy.",
+        "Trust mitmproxy's CA certificate for that program only, as https://docs.mitmproxy.org/stable/concepts-certificates/ describes.",
+        "Use each feature you want as a tool in the program. Anything you do not use is not in the capture. "
+        "To record fewer hosts, see mitmproxy's filter options (for example save_stream_filter); you can also filter at import with --host.",
+        "Stop mitmdump with Ctrl+C: it writes the HAR on exit. Then run: mcpsmith app-desktop "
+        + str(workdir / "capture.har"),
+    ]
+
+
+def app_desktop(
+    har: Path | None, workdir: Path, hosts: list[str] | None, port: int, force: bool
+) -> tuple[list[str], Source | None, str]:
+    """Without a HAR: the steps for recording. With one: import it through `inspect_source`."""
+    from .importers import load
+
+    if har is None:
+        return desktop_steps(workdir, port), None, ""
+    if (workdir / "source.json").exists() and not force:
+        raise ValueError(f"{workdir / 'source.json'} already exists (use --force to overwrite it)")
+    if not load(str(har), hosts=hosts or None).endpoints:
+        raise ValueError(
+            "nothing to import: the capture has no JSON API calls"
+            + (
+                f" to {', '.join(hosts)}"
+                if hosts
+                else " (only proxy CONNECT entries, static files or non-JSON traffic)"
+            )
+        )
+    src, _, _, text = inspect_source(str(har), workdir, hosts, 60000)
+    return [], src, text
+
+
 def load_workdir_source(workdir: Path) -> Source | None:
     path = workdir / "source.json"
     return load_source(path) if path.exists() else None
@@ -262,6 +302,18 @@ def cmd_app_js(args) -> int:
     return 0
 
 
+def cmd_app_desktop(args) -> int:
+    steps, src, _ = app_desktop(
+        Path(args.har) if args.har else None, Path(args.workdir), args.host, args.port, args.force
+    )
+    if src is None:
+        print("\n".join(f"{i}. {s}" for i, s in enumerate(steps, 1)))
+        return 0
+    print(f"{src.title}: {len(src.endpoints)} endpoints, from the recorded traffic")
+    print(f"wrote {Path(args.workdir) / 'source.json'}\nnext: mcpsmith draft{_flags(args)}")
+    return 0
+
+
 def cmd_guide(args) -> int:
     from .design import guide
 
@@ -414,6 +466,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("path", help="app directory, app.asar, or one .js/.ts/.map file (never downloaded for you)")
     sp.add_argument("--base-url", default="", help="the app's API base URL, e.g. https://api.example.com")
+
+    sp = command(
+        "app-desktop",
+        cmd_app_desktop,
+        "print the steps to record a desktop program's traffic with your own mitmproxy, or import the HAR it wrote; your own or an authorized program",
+    )
+    sp.add_argument("har", nargs="?", help="the HAR mitmdump wrote; omit to print the steps")
+    sp.add_argument("--port", type=int, default=8080, help="proxy port in the printed steps (default 8080)")
+    sp.add_argument("--host", action="append", help="keep only traffic to this host (repeatable)")
+    sp.add_argument("--force", action="store_true", help="overwrite an existing source.json")
 
     sp = command("secret", cmd_secret, "store a connection's credentials in the OS keychain", workdir=False)
     sp.add_argument("action", choices=["set", "list", "delete"])

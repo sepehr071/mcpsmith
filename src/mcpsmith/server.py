@@ -144,6 +144,30 @@ async def smith_app_js(
     }
 
 
+@tool("Read a desktop app's API", read_only=False)
+async def smith_app_desktop(
+    har: Annotated[
+        str | None, Field(description="Absolute path of the HAR the user's own mitmdump wrote; omit to get the steps.")
+    ] = None,
+    hosts: Annotated[list[str] | None, Field(description="Keep traffic to these hosts only.")] = None,
+    workdir: Annotated[str, Field(description="Absolute directory for source.json and digest.md.")] = DEFAULT_WORKDIR,
+    port: Annotated[int, Field(description="Proxy port used in the steps.")] = 8080,
+) -> dict:
+    """Guide recording a desktop program's own traffic, then import the HAR, for the user's own or an authorized program.
+
+    The developer runs the proxy (mitmproxy) themselves; mcpsmith installs, starts and configures nothing.
+    Certificate-pinned programs are out of scope. Without har it returns the steps. With har the endpoints are
+    verified (real responses). Next: smith_draft.
+    """
+    from .cli import app_desktop
+
+    wd = _paths(workdir)
+    steps, src, text = await asyncio.to_thread(app_desktop, _paths(har) if har else None, wd, hosts, port, True)
+    if src is None:
+        return {"steps": steps}
+    return {"workdir": str(wd), "endpoints": len(src.endpoints), "digest": text}
+
+
 @tool("Draft a tool plan", read_only=False)
 async def smith_draft(
     workdir: Annotated[str, Field(description="Absolute workdir that smith_inspect wrote source.json into.")],
