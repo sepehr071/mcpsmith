@@ -96,10 +96,15 @@ Tool: `name`, `title`, `description`, `endpoint` (an endpoint id from the digest
 
 ToolArg: `name` (Python identifier, not a keyword), `type` (string|integer|number|boolean|array|object),
 `description`, `required`, `default`, `enum`, `map` (friendly value -> wire value), `minimum`, `maximum`,
-`to` (target), `transform` (input transform name, e.g. `jalali->unix`; hub only).
+`to` (target), `transform` (input transform name, see below).
 
-Output: `root`, `fields`, `max_items`, `clip`, `transforms` (output name in `fields` -> transform name, e.g.
-`unix->date`; hub only).
+Output: `root`, `fields`, `max_items`, `clip`, `transforms` (output name in `fields` -> transform name, see below).
+
+Transforms convert between what a model passes or reads and the API's wire format. Dates are `YYYY-MM-DD`
+(Gregorian) or `YYYY/MM/DD` (Jalali, Latin or Persian digits, years 1300-1500); day boundaries use `timezone`;
+`*_end` is 23:59:59 of that day. Input (`ToolArg.transform`): `date->unix`, `date->unix_end`, `jalali->unix`,
+`jalali->unix_end`, `jalali->date`, `date->jalali`, `toman->rial`, `int->str`. Output (`Output.transforms`):
+`unix->date`, `unix->datetime`, `date->jalali`, `jalali->date`, `rial->toman`, `minutes->hh:mm`.
 
 Target syntax (`ToolArg.to`, keys of `Tool.fixed`): `path.<name>`, `query.<name>`, `header.<name>`,
 `cookie.<name>`, `body` (the whole JSON body is the value), `body.<a.b.c>` (nested key in the JSON body).

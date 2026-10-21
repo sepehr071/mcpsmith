@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .transforms import transform_out
+
 
 def get(data: Any, path: str) -> Any:
     """Follow a dotted path: `a.b`, `images.0.url` (list index), `tags[].name` (map over a list). Missing -> None."""
@@ -37,6 +39,18 @@ def shape(
         items = node[:max_items] if max_items is not None else node
         return {"items": clean([pick(x) for x in items], clip), "count": len(node)}
     return clean(pick(node) if isinstance(node, dict) else node, clip)
+
+
+def apply_transforms(result: Any, transforms: dict[str, str], tz: str = "") -> Any:
+    """Run `transforms` (output field -> transform name) on a shaped result: a dict, or the dicts in "items"."""
+    if isinstance(result, list):
+        return [apply_transforms(x, transforms, tz) for x in result]
+    if not isinstance(result, dict):
+        return result
+    out = {k: transform_out(transforms[k], v, tz) if k in transforms else v for k, v in result.items()}
+    if isinstance(out.get("items"), list):
+        out["items"] = apply_transforms(out["items"], transforms, tz)
+    return out
 
 
 def clean(v: Any, clip: int = 0, top: bool = False) -> Any:
