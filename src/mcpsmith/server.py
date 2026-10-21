@@ -119,6 +119,31 @@ async def smith_app_android(
     }
 
 
+@tool("Read a JavaScript app's API", read_only=False)
+async def smith_app_js(
+    path: Annotated[
+        str, Field(description="Absolute path of the app directory, its app.asar, or one .js/.ts/.map file.")
+    ],
+    base_url: Annotated[str, Field(description="The app's API base URL, e.g. https://api.example.com.")] = "",
+    workdir: Annotated[str, Field(description="Absolute directory for source.json and digest.md.")] = DEFAULT_WORKDIR,
+) -> dict:
+    """Read the HTTP calls an Electron/JavaScript app makes out of its own shipped code, for the user's own or an authorized app.
+
+    Reads files as text (preferring the original sources in .map files); runs nothing. The endpoints are unverified
+    until smith_probe calls them. Next: smith_probe, then smith_draft.
+    """
+    from .cli import app_js
+
+    wd = _paths(workdir)
+    src, text = await asyncio.to_thread(app_js, _paths(path), base_url, wd)
+    return {
+        "workdir": str(wd),
+        "endpoints": len(src.endpoints),
+        "unverified": sum(not e.verified for e in src.endpoints),
+        "digest": text,
+    }
+
+
 @tool("Draft a tool plan", read_only=False)
 async def smith_draft(
     workdir: Annotated[str, Field(description="Absolute workdir that smith_inspect wrote source.json into.")],

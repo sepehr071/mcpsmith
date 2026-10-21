@@ -128,6 +128,7 @@ async def test_server_tools(client, spec, tmp_path):
         "smith_guide",
         "smith_probe",
         "smith_app_android",
+        "smith_app_js",
         "smith_inspect",
         "smith_draft",
         "smith_validate",

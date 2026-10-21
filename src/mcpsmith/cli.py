@@ -72,6 +72,23 @@ def app_android(
     return [], src, text
 
 
+def app_js(path: Path, base_url: str, workdir: Path) -> tuple[Source, str]:
+    """Read an app's own JavaScript (directory, .asar or file) into unverified endpoints; write source.json + digest.md."""
+    from .design import digest
+    from .importers import electron
+
+    notes: list[str] = []
+    src = electron.parse_sources(electron.read_app(path, notes), base_url)
+    src.description = "\n".join(filter(None, [*notes, src.description]))
+    if not src.endpoints:
+        raise ValueError(f"no endpoints found: {src.description}")
+    workdir.mkdir(parents=True, exist_ok=True)
+    save_source(src, workdir / "source.json")
+    text = digest(src)
+    (workdir / "digest.md").write_text(text, encoding="utf-8", newline="\n")
+    return src, text
+
+
 def load_workdir_source(workdir: Path) -> Source | None:
     path = workdir / "source.json"
     return load_source(path) if path.exists() else None
@@ -236,6 +253,15 @@ def cmd_app_android(args) -> int:
     return 0
 
 
+def cmd_app_js(args) -> int:
+    src, _ = app_js(Path(args.path), args.base_url, Path(args.workdir))
+    print(f"{src.title}: {len(src.endpoints)} endpoints, all unverified")
+    if src.description:
+        print(src.description)
+    print(f"wrote {Path(args.workdir) / 'source.json'}\nnext: mcpsmith probe{_flags(args)}")
+    return 0
+
+
 def cmd_guide(args) -> int:
     from .design import guide
 
@@ -379,6 +405,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--class", dest="cls", help="decompiled Retrofit interface class; omit to list candidates")
     sp.add_argument("--source", help="a class already decompiled by any tool (.java file); skips the jar")
     sp.add_argument("--jadx-jar", help="REA's JADX MCP jar (default: $REA_JADX_MCP_JAR, set by `npx rea-agents setup`)")
+    sp.add_argument("--base-url", default="", help="the app's API base URL, e.g. https://api.example.com")
+
+    sp = command(
+        "app-js",
+        cmd_app_js,
+        "read an Electron/JavaScript app's own HTTP calls (directory, .asar, .js or .map) into unverified endpoints; your own or an authorized app",
+    )
+    sp.add_argument("path", help="app directory, app.asar, or one .js/.ts/.map file (never downloaded for you)")
     sp.add_argument("--base-url", default="", help="the app's API base URL, e.g. https://api.example.com")
 
     sp = command("secret", cmd_secret, "store a connection's credentials in the OS keychain", workdir=False)
