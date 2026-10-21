@@ -165,6 +165,13 @@ async def test_server_tools(client, spec, tmp_path):
 
 
 @pytest.mark.anyio
+async def test_tool_list_stays_small(client):
+    # every agent pays for this list in context on each turn (REA's is 3.35 MB); ≈15 KB at 0.5.0
+    tools = [t.model_dump(exclude_none=True) for t in (await client.list_tools()).tools]
+    assert len(json.dumps(tools)) < 24_000
+
+
+@pytest.mark.anyio
 async def test_smith_install_registers_generated_project(client, spec, tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
