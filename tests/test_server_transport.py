@@ -9,7 +9,7 @@ import httpx
 import pytest
 from mcp.types import LATEST_PROTOCOL_VERSION
 
-from mcpsmith.runtime import run
+from toolsmelt.runtime import run
 
 
 class FakeServer:
@@ -92,11 +92,11 @@ INIT = {
 
 
 def _hub(tmp_path, **env):
-    """Start `mcpsmith mcp --transport http` on a free port; returns (process, url)."""
+    """Start `toolsmelt mcp --transport http` on a free port; returns (process, url)."""
     port = _free_port()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "mcpsmith.cli", "mcp", "--transport", "http", "--port", str(port)],
-        env={**os.environ, "MCPSMITH_HOME": str(tmp_path), **env},
+        [sys.executable, "-m", "toolsmelt.cli", "mcp", "--transport", "http", "--port", str(port)],
+        env={**os.environ, "TOOLSMELT_HOME": str(tmp_path), **env},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
@@ -134,7 +134,7 @@ def test_hub_needs_the_bearer_token_when_set(tmp_path):
             assert bad.status_code == 401
             ok = http.post(url, json=INIT, headers={**headers, "authorization": "Bearer s3cret-token"})
             assert ok.status_code == 200, ok.text
-            assert _rpc(ok)["result"]["serverInfo"]["name"] == "mcpsmith"
+            assert _rpc(ok)["result"]["serverInfo"]["name"] == "toolsmelt"
     finally:
         _stop(proc)
 
@@ -146,7 +146,7 @@ def test_hub_serves_streamable_http(tmp_path):
         with httpx.Client(trust_env=False, timeout=10) as http:
             r = _first(http, proc, url, headers)
             assert r.status_code == 200, r.text
-            assert _rpc(r)["result"]["serverInfo"]["name"] == "mcpsmith"
+            assert _rpc(r)["result"]["serverInfo"]["name"] == "toolsmelt"
             if sid := r.headers.get("mcp-session-id"):
                 headers["mcp-session-id"] = sid
             http.post(url, json={"jsonrpc": "2.0", "method": "notifications/initialized"}, headers=headers)

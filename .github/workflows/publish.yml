@@ -29,6 +29,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+  # The old name: a tiny `mcpsmith` package that installs toolsmelt and keeps `import mcpsmith` working
+  # (needs its own PyPI trusted publisher: project mcpsmith, this repo, workflow publish.yml, environment pypi).
+  mcpsmith-shim:
+    needs: pypi
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Check the shim version matches the tag
+        run: grep -q "^version = \"${GITHUB_REF_NAME#v}\"" compat/mcpsmith/pyproject.toml
+      - run: uv build compat/mcpsmith -o shim-dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: shim-dist/
+
   mcp-registry:
     needs: pypi
     runs-on: ubuntu-latest
@@ -40,7 +58,7 @@ jobs:
       - name: Wait for PyPI to serve the new version
         run: |
           for i in $(seq 1 30); do
-            curl -sf "https://pypi.org/pypi/mcpsmith/${GITHUB_REF_NAME#v}/json" >/dev/null && exit 0
+            curl -sf "https://pypi.org/pypi/toolsmelt/${GITHUB_REF_NAME#v}/json" >/dev/null && exit 0
             sleep 10
           done
           exit 1

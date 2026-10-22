@@ -1,15 +1,15 @@
 {
-  "name": "mcpsmith",
-  "displayName": "mcpsmith",
-  "version": "0.6.0",
+  "name": "toolsmelt",
+  "displayName": "toolsmelt",
+  "version": "0.7.0",
   "description": "Turn an OpenAPI file, a website, an app, a Postman collection or a database into curated, tested MCP tools. Skills and an MCP server for your coding agent.",
   "author": {
     "name": "Sepehr Radmard",
     "email": "sepehrr80@gmail.com",
     "url": "https://github.com/sepehr071"
   },
-  "homepage": "https://github.com/sepehr071/mcpsmith",
-  "repository": "https://github.com/sepehr071/mcpsmith",
+  "homepage": "https://github.com/sepehr071/toolsmelt",
+  "repository": "https://github.com/sepehr071/toolsmelt",
   "license": "MIT",
   "keywords": [
     "mcp",
@@ -20,14 +20,14 @@
     "agents"
   ],
   "mcpServers": {
-    "mcpsmith": {
+    "toolsmelt": {
       "command": "uvx",
       "args": [
-        "mcpsmith@0.6.0",
+        "toolsmelt@0.7.0",
         "mcp"
       ]
     },
-    "mcpsmith-chrome": {
+    "toolsmelt-chrome": {
       "command": "npx",
       "args": [
         "-y",

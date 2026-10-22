@@ -6,12 +6,12 @@ from mcp import Client
 from mcp.server import MCPServer
 from test_codegen import PLAN, SOURCE
 
-from mcpsmith.check import _import_server
-from mcpsmith.codegen import generate
-from mcpsmith.model import Output, Paginate, Plan, Step, Tool, ToolArg
-from mcpsmith.runtime import ApiError, transform_in
-from mcpsmith.runtime.interpret import make_api, make_tool, run_tool, tool_spec
-from mcpsmith.runtime.server import _strip_titles, compact
+from toolsmelt.check import _import_server
+from toolsmelt.codegen import generate
+from toolsmelt.model import Output, Paginate, Plan, Step, Tool, ToolArg
+from toolsmelt.runtime import ApiError, transform_in
+from toolsmelt.runtime.interpret import make_api, make_tool, run_tool, tool_spec
+from toolsmelt.runtime.server import _strip_titles, compact
 
 pytestmark = pytest.mark.anyio
 

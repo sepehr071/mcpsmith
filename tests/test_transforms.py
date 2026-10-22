@@ -3,9 +3,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from mcpsmith.runtime import ApiError
-from mcpsmith.runtime.shape import apply_transforms
-from mcpsmith.runtime.transforms import INPUT_NAMES, NAMES, OUTPUT_NAMES, transform_in, transform_out
+from toolsmelt.runtime import ApiError
+from toolsmelt.runtime.shape import apply_transforms
+from toolsmelt.runtime.transforms import INPUT_NAMES, NAMES, OUTPUT_NAMES, transform_in, transform_out
 
 
 def test_jalali_dates():

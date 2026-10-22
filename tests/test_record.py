@@ -4,8 +4,8 @@ import json
 import pytest
 from fake_cdp import FakeCdp
 
-from mcpsmith import browser, importers
-from mcpsmith.record import Recorder
+from toolsmelt import browser, importers
+from toolsmelt.record import Recorder
 
 
 @pytest.fixture
@@ -15,7 +15,7 @@ def anyio_backend():
 
 @pytest.fixture(autouse=True)
 def hub_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("MCPSMITH_HOME", str(tmp_path))
+    monkeypatch.setenv("TOOLSMELT_HOME", str(tmp_path))
     return tmp_path
 
 
@@ -101,7 +101,7 @@ async def test_big_response_has_no_body_and_second_start_fails(hub_home):
 
 @pytest.mark.anyio
 async def test_start_without_chrome():
-    with pytest.raises(RuntimeError, match="mcpsmith browser"):
+    with pytest.raises(RuntimeError, match="toolsmelt browser"):
         await Recorder().start("x", ["shop.test"])
     assert browser.status() is None
 

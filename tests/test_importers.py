@@ -5,8 +5,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from mcpsmith import importers
-from mcpsmith.importers import har, openapi
+from toolsmelt import importers
+from toolsmelt.importers import har, openapi
 
 FIXTURES = Path(__file__).parent / "fixtures"
 PETSTORE3_URL = "https://petstore3.swagger.io/api/v3/openapi.json"
@@ -325,7 +325,7 @@ LEAKS = [
 
 
 def test_har_leaks_no_secrets_or_personal_data():
-    from mcpsmith.design import digest
+    from toolsmelt.design import digest
 
     src = har.parse(_leaky_har())
     texts = [src.model_dump_json(), digest(src)]
@@ -555,7 +555,7 @@ def test_deref_dense_graph_is_fast_and_small():
 
 
 def test_deref_deep_chain_and_cycle_can_be_saved(tmp_path):
-    from mcpsmith.model import save_source
+    from toolsmelt.model import save_source
 
     chain = {
         f"S{i}": {"type": "object", "properties": {"n": {"$ref": f"#/components/schemas/S{i + 1}"}}} for i in range(200)

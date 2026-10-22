@@ -9,7 +9,7 @@ OpenAPI / website / Android / Electron / desktop / something else
 
 **What is missing or hard today?**
 
-**What would you like mcpsmith to do?**
+**What would you like toolsmelt to do?**
 
 **Anything you tried instead**
 

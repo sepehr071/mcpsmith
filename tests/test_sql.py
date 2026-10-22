@@ -8,14 +8,14 @@ import sys
 import pytest
 from mcp import Client
 
-from mcpsmith.check import _import_server
-from mcpsmith.codegen import generate
-from mcpsmith.design import digest, draft, validate
-from mcpsmith.importers import load
-from mcpsmith.model import Tool, ToolArg
-from mcpsmith.runtime import ApiError
-from mcpsmith.runtime.interpret import make_api, make_tool, run_tool, tool_spec
-from mcpsmith.runtime.sql import Db, connect_url, read_only_problem
+from toolsmelt.check import _import_server
+from toolsmelt.codegen import generate
+from toolsmelt.design import digest, draft, validate
+from toolsmelt.importers import load
+from toolsmelt.model import Tool, ToolArg
+from toolsmelt.runtime import ApiError
+from toolsmelt.runtime.interpret import make_api, make_tool, run_tool, tool_spec
+from toolsmelt.runtime.sql import Db, connect_url, read_only_problem
 
 sa = pytest.importorskip("sqlalchemy")
 pytestmark = pytest.mark.anyio
@@ -143,7 +143,7 @@ def test_password_never_stored(monkeypatch):
     with pytest.raises(ValueError) as e:
         load("nosuchdialect://bob:s3cret@db.test/shop")
     assert "s3cret" not in str(e.value)
-    from mcpsmith.importers.sql import public_dsn
+    from toolsmelt.importers.sql import public_dsn
 
     url = sa.engine.make_url("postgresql://bob:s3cret@db.test:5433/shop?sslmode=require&password=x")
     assert public_dsn(url) == "postgresql://bob@db.test:5433/shop?sslmode=require"
@@ -160,8 +160,8 @@ async def test_generated_project_replays_and_runs(flow, db, tmp_path):
     out = tmp_path / "shop-mcp"
     generate(plan, out, source)
     code = (out / "src/shop_mcp/server.py").read_text(encoding="utf-8")
-    assert "from mcpsmith.runtime.sql import Db" in code and "api = Db(" in code and '"sql": \'SELECT' in code
-    assert '"mcpsmith[sql]>=0.6,<1"' in (out / "pyproject.toml").read_text(encoding="utf-8")
+    assert "from toolsmelt.runtime.sql import Db" in code and "api = Db(" in code and '"sql": \'SELECT' in code
+    assert '"toolsmelt[sql]>=0.7,<1"' in (out / "pyproject.toml").read_text(encoding="utf-8")
     assert "driver" in (out / "README.md").read_text(encoding="utf-8")
     assert "shop.test" not in "".join(p.read_text(encoding="utf-8") for p in (out / "tests/fixtures").iterdir())
     env = {k: v for k, v in os.environ.items() if not k.startswith("SHOP_MCP")} | {"PYTHONPATH": str(out / "src")}

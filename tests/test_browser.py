@@ -3,7 +3,7 @@ import json
 import pytest
 from fake_cdp import FakeCdp
 
-from mcpsmith import browser
+from toolsmelt import browser
 
 COOKIES = {
     "cookies": [
@@ -22,7 +22,7 @@ def anyio_backend():
 
 @pytest.fixture(autouse=True)
 def hub_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("MCPSMITH_HOME", str(tmp_path))
+    monkeypatch.setenv("TOOLSMELT_HOME", str(tmp_path))
     monkeypatch.delenv("HTTPS_PROXY", raising=False)
     monkeypatch.delenv("https_proxy", raising=False)
     return tmp_path
@@ -87,9 +87,9 @@ def test_launch_reuses_running(popen):
 def test_find_chrome_env_and_missing(monkeypatch, tmp_path):
     exe = tmp_path / "c.exe"
     exe.write_text("")
-    monkeypatch.setenv("MCPSMITH_CHROME", str(exe))
+    monkeypatch.setenv("TOOLSMELT_CHROME", str(exe))
     assert browser.find_chrome() == exe
-    monkeypatch.setenv("MCPSMITH_CHROME", str(tmp_path / "nope"))
+    monkeypatch.setenv("TOOLSMELT_CHROME", str(tmp_path / "nope"))
     monkeypatch.setattr(browser, "_CANDIDATES", [str(tmp_path / "nada")])
     with pytest.raises(RuntimeError, match="nada"):
         browser.find_chrome()

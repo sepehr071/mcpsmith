@@ -4,9 +4,9 @@ import pytest
 from keyring.backend import KeyringBackend
 from keyring.errors import PasswordDeleteError
 
-from mcpsmith import secrets
-from mcpsmith.cli import main
-from mcpsmith.runtime import Api, ApiError
+from toolsmelt import secrets
+from toolsmelt.cli import main
+from toolsmelt.runtime import Api, ApiError
 
 pytestmark = pytest.mark.anyio
 
@@ -48,7 +48,7 @@ def test_set_get_delete(memory_keyring):
     secrets.set("shop", "TOKEN", "abc")
     assert secrets.get("shop", "TOKEN") == "abc"
     assert secrets.get("shop", "TOKEN") == "abc"
-    assert ("mcpsmith/shop", "TOKEN") in memory_keyring.data
+    assert ("mcpsmith/shop", "TOKEN") in memory_keyring.data  # pre-rename service name: stored secrets keep working
     secrets.delete("shop", "TOKEN")
     assert secrets.get("shop", "TOKEN") is None
     secrets.delete("shop", "TOKEN")  # deleting twice is fine
@@ -142,4 +142,4 @@ def test_no_keychain_get_is_none_and_cli_explains(capsys):
     assert secrets.get("shop", "TOKEN") is None
     assert main(["secret", "list", "shop"]) == 2
     err = capsys.readouterr().err
-    assert err.startswith("mcpsmith: error:") and "environment variable" in err
+    assert err.startswith("toolsmelt: error:") and "environment variable" in err

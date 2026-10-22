@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Something mcpsmith did wrong
+about: Something toolsmelt did wrong
 labels: bug
 ---
 
@@ -12,8 +12,8 @@ The exact command or MCP tool call.
 **Target kind**
 OpenAPI / website / Android / Electron / desktop
 
-**mcpsmith version**
-Output of `pip show mcpsmith` (or `uv tool list`).
+**toolsmelt version**
+Output of `pip show toolsmelt` (or `uv tool list`).
 
 **Python version**
 

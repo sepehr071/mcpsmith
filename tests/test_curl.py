@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from mcpsmith import importers
-from mcpsmith.importers import curl
+from toolsmelt import importers
+from toolsmelt.importers import curl
 
 FIXTURES = Path(__file__).parent / "fixtures" / "curl"
 

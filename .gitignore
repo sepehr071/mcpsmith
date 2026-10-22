@@ -4,6 +4,6 @@ __pycache__/
 dist/
 .pytest_cache/
 .ruff_cache/
-.mcpsmith/
+.toolsmelt/
 *.har
 !tests/fixtures/har/*.har

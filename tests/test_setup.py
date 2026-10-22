@@ -2,7 +2,7 @@ import subprocess
 import zipfile
 from pathlib import Path
 
-from mcpsmith.skills_path import skills_dir
+from toolsmelt.skills_path import skills_dir
 
 SKILLS = ["build-mcp-server", "design-mcp-tools", "extract-api"]
 
@@ -18,7 +18,7 @@ def test_wheel_contains_skills(tmp_path):
     wheel = next(tmp_path.glob("*.whl"))
     names = zipfile.ZipFile(wheel).namelist()
     for name in SKILLS:
-        assert f"mcpsmith/skills/{name}/SKILL.md" in names
+        assert f"toolsmelt/skills/{name}/SKILL.md" in names
 
 
 # --- agent targets ---
@@ -26,24 +26,24 @@ def test_wheel_contains_skills(tmp_path):
 import pytest  # noqa: E402
 import tomlkit  # noqa: E402
 
-from mcpsmith import __version__  # noqa: E402
-from mcpsmith.setup.agents import AGENTS, proxy_env, server_entry  # noqa: E402
+from toolsmelt import __version__  # noqa: E402
+from toolsmelt.setup.agents import AGENTS, proxy_env, server_entry  # noqa: E402
 
 ENV = {"HTTPS_PROXY": "http://h:1"}
 
 
 def test_server_entry_shapes():
-    assert server_entry("mcpsmith", False, ENV) == {
+    assert server_entry("toolsmelt", False, ENV) == {
         "command": "uvx",
-        "args": [f"mcpsmith@{__version__}", "mcp"],
+        "args": [f"toolsmelt@{__version__}", "mcp"],
         "env": ENV,
     }
-    win = server_entry("mcpsmith-chrome", True, ENV)
+    win = server_entry("toolsmelt-chrome", True, ENV)
     assert win["command"] == "cmd"
     assert win["args"][:5] == ["/d", "/c", "npx", "-y", "chrome-devtools-mcp@1.11.0"]
     assert win["env"] == {}
-    assert server_entry("mcpsmith-chrome", False, ENV)["command"] == "npx"
-    assert server_entry("mcpsmith", True, ENV)["command"] == "uvx"
+    assert server_entry("toolsmelt-chrome", False, ENV)["command"] == "npx"
+    assert server_entry("toolsmelt", True, ENV)["command"] == "uvx"
 
 
 def test_proxy_env_strips_userinfo_and_ignores_other_vars():
@@ -56,21 +56,21 @@ def test_proxy_env_strips_userinfo_and_ignores_other_vars():
 def test_json_agents_add_remove(agent_id):
     agent = AGENTS[agent_id]
     doc = {"theme": "dark", "mcpServers": {"other": {"command": "x"}}}
-    for name in ("mcpsmith", "mcpsmith-chrome"):
+    for name in ("toolsmelt", "toolsmelt-chrome"):
         agent.add(doc, name, server_entry(name, False, ENV))
-    assert doc["mcpServers"]["mcpsmith"] == {"type": "stdio", **server_entry("mcpsmith", False, ENV)}
-    assert doc["mcpServers"]["mcpsmith-chrome"]["type"] == "stdio"
-    assert list(doc["mcpServers"]) == ["other", "mcpsmith", "mcpsmith-chrome"]
-    assert agent.has(doc, "mcpsmith")
-    agent.remove(doc, "mcpsmith")
-    agent.remove(doc, "mcpsmith-chrome")
+    assert doc["mcpServers"]["toolsmelt"] == {"type": "stdio", **server_entry("toolsmelt", False, ENV)}
+    assert doc["mcpServers"]["toolsmelt-chrome"]["type"] == "stdio"
+    assert list(doc["mcpServers"]) == ["other", "toolsmelt", "toolsmelt-chrome"]
+    assert agent.has(doc, "toolsmelt")
+    agent.remove(doc, "toolsmelt")
+    agent.remove(doc, "toolsmelt-chrome")
     assert doc == {"theme": "dark", "mcpServers": {"other": {"command": "x"}}}
     assert agent.dump(doc).startswith('{\n  "theme"')
 
 
 def test_gemini_entry_has_timeout_and_no_type():
-    doc = AGENTS["gemini"].add({}, "mcpsmith", server_entry("mcpsmith", False, ENV))
-    assert doc["mcpServers"]["mcpsmith"] == {**server_entry("mcpsmith", False, ENV), "timeout": 30000}
+    doc = AGENTS["gemini"].add({}, "toolsmelt", server_entry("toolsmelt", False, ENV))
+    assert doc["mcpServers"]["toolsmelt"] == {**server_entry("toolsmelt", False, ENV), "timeout": 30000}
 
 
 def test_codex_toml_keeps_comments_and_other_tables():
@@ -79,29 +79,29 @@ def test_codex_toml_keeps_comments_and_other_tables():
     import tomlkit
 
     doc = tomlkit.parse(path_text)
-    agent.add(doc, "mcpsmith", server_entry("mcpsmith", False, ENV))
-    agent.add(doc, "mcpsmith-chrome", server_entry("mcpsmith-chrome", False, ENV))
+    agent.add(doc, "toolsmelt", server_entry("toolsmelt", False, ENV))
+    agent.add(doc, "toolsmelt-chrome", server_entry("toolsmelt-chrome", False, ENV))
     out = tomlkit.parse(agent.dump(doc))
-    assert out["mcp_servers"]["mcpsmith"] == {
+    assert out["mcp_servers"]["toolsmelt"] == {
         "command": "uvx",
-        "args": [f"mcpsmith@{__version__}", "mcp"],
+        "args": [f"toolsmelt@{__version__}", "mcp"],
         "startup_timeout_sec": 30,
         "env": ENV,
     }
-    assert "env" not in out["mcp_servers"]["mcpsmith-chrome"]
-    assert "[mcp_servers.mcpsmith.env]" in agent.dump(doc) or "env = " in agent.dump(doc)
-    agent.remove(doc, "mcpsmith")
-    agent.remove(doc, "mcpsmith-chrome")
+    assert "env" not in out["mcp_servers"]["toolsmelt-chrome"]
+    assert "[mcp_servers.toolsmelt.env]" in agent.dump(doc) or "env = " in agent.dump(doc)
+    agent.remove(doc, "toolsmelt")
+    agent.remove(doc, "toolsmelt-chrome")
     assert agent.dump(doc).startswith(path_text)
-    assert agent.has(doc, "other") and not agent.has(doc, "mcpsmith")
+    assert agent.has(doc, "other") and not agent.has(doc, "toolsmelt")
 
 
 def test_codex_add_to_empty_doc():
     agent = AGENTS["codex"]
     text = agent.dump(
-        agent.add(agent.load(Path("/nonexistent/x.toml")), "mcpsmith", server_entry("mcpsmith", False, {}))
+        agent.add(agent.load(Path("/nonexistent/x.toml")), "toolsmelt", server_entry("toolsmelt", False, {}))
     )
-    assert text.startswith("[mcp_servers.mcpsmith]")
+    assert text.startswith("[mcp_servers.toolsmelt]")
 
 
 @pytest.mark.parametrize("agent_id", list(AGENTS))
@@ -141,14 +141,14 @@ def test_detected_by_dir_or_cli(tmp_path):
     assert not AGENTS["codex"].detected(tmp_path, {"CODEX_HOME": str(tmp_path / "cx")}, none)
 
 
-# --- mcpsmith setup ---
+# --- toolsmelt setup ---
 
 import io  # noqa: E402
 import json  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
-from mcpsmith.cli import build_parser, main  # noqa: E402
-from mcpsmith.setup import run as setup_run  # noqa: E402
+from toolsmelt.cli import build_parser, main  # noqa: E402
+from toolsmelt.setup import run as setup_run  # noqa: E402
 
 TOML = '# my config\nmodel = "o3"\n\n[mcp_servers.other]\ncommand = "x"\n'
 
@@ -185,8 +185,8 @@ def test_dry_run_writes_nothing(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0 and calls == []
     assert (home / ".claude.json").read_bytes() == before
-    assert not list(home.rglob("*.mcpsmith.bak")) and not (home / ".agents").exists()
-    assert out.count("add") >= 6 and "mcpsmith-chrome" in out and "rea" in out and ".agents" in out
+    assert not list(home.rglob("*.toolsmelt.bak")) and not (home / ".agents").exists()
+    assert out.count("add") >= 6 and "toolsmelt-chrome" in out and "rea" in out and ".agents" in out
 
 
 def test_setup_remove_roundtrip(tmp_path):
@@ -197,14 +197,14 @@ def test_setup_remove_roundtrip(tmp_path):
     assert [c[-3:] for c in calls] == [["--client", "claude_code", "--yes"], ["--client", "codex", "--yes"]]
     assert "setup" in calls[0] and setup_run.REA in calls[0]
     cfg = json.loads((home / ".claude.json").read_text())
-    assert {"mcpsmith", "mcpsmith-chrome", "o"} <= set(cfg["mcpServers"])
-    assert "mcp_servers.mcpsmith" in (home / ".codex" / "config.toml").read_text()
+    assert {"toolsmelt", "toolsmelt-chrome", "o"} <= set(cfg["mcpServers"])
+    assert "mcp_servers.toolsmelt" in (home / ".codex" / "config.toml").read_text()
     for n in SKILLS:
         assert (home / ".claude" / "skills" / n / "SKILL.md").is_file()
         assert (home / ".agents" / "skills" / n / "SKILL.md").is_file()
-    bak = home / ".claude.json.mcpsmith.bak"
+    bak = home / ".claude.json.toolsmelt.bak"
     assert json.loads(bak.read_text()) == orig_json
-    assert (home / ".codex" / "config.toml.mcpsmith.bak").read_text(encoding="utf-8") == TOML
+    assert (home / ".codex" / "config.toml.toolsmelt.bak").read_text(encoding="utf-8") == TOML
 
     # second run: nothing to add, backups untouched
     rc, calls = go(home, "--yes", "--agents", "claude,codex", "--no-rea")
@@ -234,7 +234,7 @@ def test_malformed_config_skips_that_agent(tmp_path, capsys):
     rc, calls = go(home, "--yes", "--rea", "--agents", "claude,codex,cursor")
     assert rc == 0 and [c[-2] for c in calls] == ["cursor"]
     assert (home / ".codex" / "config.toml").read_text(encoding="utf-8") == "[[[ bad"
-    assert "mcpsmith" in json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]
+    assert "toolsmelt" in json.loads((home / ".cursor" / "mcp.json").read_text())["mcpServers"]
     assert capsys.readouterr().out.count("skipped:") >= 2
 
 
@@ -244,7 +244,7 @@ def test_no_node_skips_chrome_and_rea(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0 and calls == []
     assert out.count("npx not found") >= 2
-    assert list(json.loads((home / ".claude.json").read_text())["mcpServers"]) == ["o", "mcpsmith"]
+    assert list(json.loads((home / ".claude.json").read_text())["mcpServers"]) == ["o", "toolsmelt"]
 
 
 def test_other_entries_untouched_by_name(tmp_path):
@@ -257,7 +257,7 @@ def test_other_entries_untouched_by_name(tmp_path):
     flags = ("--yes", "--agents", "claude,codex", "--no-rea", "--no-skills")
     go(home, *flags)
     servers = json.loads((home / ".claude.json").read_text())["mcpServers"]
-    assert servers["chrome-devtools"] == mine and {"mcpsmith", "mcpsmith-chrome"} <= set(servers)
+    assert servers["chrome-devtools"] == mine and {"toolsmelt", "toolsmelt-chrome"} <= set(servers)
     assert own in (home / ".codex" / "config.toml").read_text("utf-8")
     go(home, *flags, "--remove")
     assert json.loads((home / ".claude.json").read_text()) == {"mcpServers": {"chrome-devtools": mine}}
@@ -300,8 +300,8 @@ def test_write_is_atomic_and_keeps_symlink(tmp_path, monkeypatch):
 
     monkeypatch.setattr(setup_run.os, "replace", spy)
     go(home, "--yes", "--agents", "claude", "--no-rea", "--no-skills")
-    assert seen and seen[0][0] == real.resolve() and seen[0][1] and "mcpsmith" in seen[0][2]["mcpServers"]
-    assert (home / ".claude.json").is_symlink() and "mcpsmith" in json.loads(real.read_text())["mcpServers"]
+    assert seen and seen[0][0] == real.resolve() and seen[0][1] and "toolsmelt" in seen[0][2]["mcpServers"]
+    assert (home / ".claude.json").is_symlink() and "toolsmelt" in json.loads(real.read_text())["mcpServers"]
     assert not list(real.parent.glob("*.tmp"))
 
 
@@ -311,9 +311,9 @@ def test_user_skill_survives_install_and_remove(tmp_path, capsys):
     mine.mkdir(parents=True)
     (mine / "SKILL.md").write_text("mine", encoding="utf-8")
     go(home, "--yes", "--agents", "claude", "--no-rea")
-    assert "exists and is not mcpsmith's" in capsys.readouterr().out
-    assert (mine / "SKILL.md").read_text(encoding="utf-8") == "mine" and not (mine / ".mcpsmith").exists()
-    assert (home / ".claude" / "skills" / "build-mcp-server" / ".mcpsmith").is_file()
+    assert "exists and is not toolsmelt's" in capsys.readouterr().out
+    assert (mine / "SKILL.md").read_text(encoding="utf-8") == "mine" and not (mine / ".toolsmelt").exists()
+    assert (home / ".claude" / "skills" / "build-mcp-server" / ".toolsmelt").is_file()
     go(home, "--yes", "--remove", "--agents", "claude", "--no-rea")
     assert (mine / "SKILL.md").read_text(encoding="utf-8") == "mine"
     assert not (home / ".claude" / "skills" / "build-mcp-server").exists()
@@ -355,7 +355,7 @@ def test_skill_copy_error_continues_with_other_agents(tmp_path, capsys, monkeypa
     out = capsys.readouterr().out
     assert rc == 1 and "FAILED skill" in out and "locked" in out
     assert (home / ".agents" / "skills" / "build-mcp-server" / "SKILL.md").is_file()
-    assert "mcp_servers.mcpsmith" in (home / ".codex" / "config.toml").read_text(encoding="utf-8")
+    assert "mcp_servers.toolsmelt" in (home / ".codex" / "config.toml").read_text(encoding="utf-8")
 
 
 def test_non_tty_without_yes_exits_2(tmp_path, capsys, monkeypatch):
@@ -370,10 +370,10 @@ def test_confirmation_prompt(tmp_path, monkeypatch):
     home = make_home(tmp_path)
     monkeypatch.setattr("builtins.input", lambda _: "n")
     go(home, "--agents", "claude", "--no-rea")
-    assert not (home / ".claude.json.mcpsmith.bak").exists()
+    assert not (home / ".claude.json.toolsmelt.bak").exists()
     monkeypatch.setattr("builtins.input", lambda _: "y")
     go(home, "--agents", "claude", "--no-rea")
-    assert (home / ".claude.json.mcpsmith.bak").exists()
+    assert (home / ".claude.json.toolsmelt.bak").exists()
 
 
 def test_rea_is_opt_in(tmp_path):
@@ -384,9 +384,9 @@ def test_rea_is_opt_in(tmp_path):
     assert [c[-3:] for c in go(home, *flags, "--rea")[1]] == [["--client", "claude_code", "--yes"]]
 
 
-# --- mcpsmith install ---
+# --- toolsmelt install ---
 
-from mcpsmith.model import Plan, save_plan  # noqa: E402
+from toolsmelt.model import Plan, save_plan  # noqa: E402
 
 
 def make_project(tmp_path, name="demo-mcp"):
@@ -402,7 +402,7 @@ def make_project(tmp_path, name="demo-mcp"):
         base_url="https://x.test",
         tools=[],
     )
-    save_plan(plan, project / "mcpsmith.yaml")
+    save_plan(plan, project / "toolsmelt.yaml")
     return project
 
 
@@ -420,7 +420,7 @@ def test_install_adds_entry_and_removes_it(tmp_path):
     assert servers["demo-mcp"] == {"type": "stdio", **local} and set(servers) == {"o", "demo-mcp"}
     codex = tomlkit.parse((home / ".codex" / "config.toml").read_text(encoding="utf-8"))
     assert codex["mcp_servers"]["demo-mcp"]["args"] == local["args"] and "env" not in codex["mcp_servers"]["demo-mcp"]
-    assert json.loads((home / ".claude.json.mcpsmith.bak").read_text()) == orig_json
+    assert json.loads((home / ".claude.json.toolsmelt.bak").read_text()) == orig_json
     changes = setup_run.install_changes(project, home, {}, ["claude", "codex"])
     assert {c.action for c in changes} == {"skip"}  # second run: up to date
     assert install(home, str(project), "--yes", "--remove", "--agents", "claude,codex") == 0
@@ -438,7 +438,7 @@ def test_install_pypi_entry(tmp_path):
 def test_install_refuses_conflicting_entry_unless_force(tmp_path, capsys):
     home, project = make_home(tmp_path), make_project(tmp_path)
     theirs = {"command": "node", "args": ["server.js"]}
-    (home / ".claude.json").write_text(json.dumps({"mcpServers": {"demo-mcp": theirs, "mcpsmith": {"command": "x"}}}))
+    (home / ".claude.json").write_text(json.dumps({"mcpServers": {"demo-mcp": theirs, "toolsmelt": {"command": "x"}}}))
     assert install(home, str(project), "--yes", "--agents", "claude") == 1
     assert "CONFLICT" in capsys.readouterr().out
     assert json.loads((home / ".claude.json").read_text())["mcpServers"]["demo-mcp"] == theirs
@@ -446,7 +446,7 @@ def test_install_refuses_conflicting_entry_unless_force(tmp_path, capsys):
     assert json.loads((home / ".claude.json").read_text())["mcpServers"]["demo-mcp"] == theirs
     assert install(home, str(project), "--yes", "--force", "--agents", "claude") == 0
     servers = json.loads((home / ".claude.json").read_text())["mcpServers"]
-    assert servers["demo-mcp"]["command"] == "uv" and servers["mcpsmith"] == {"command": "x"}
+    assert servers["demo-mcp"]["command"] == "uv" and servers["toolsmelt"] == {"command": "x"}
 
 
 def test_install_dry_run_and_bad_project(tmp_path, capsys):
@@ -457,4 +457,4 @@ def test_install_dry_run_and_bad_project(tmp_path, capsys):
     with pytest.raises(OSError):
         install(home, str(tmp_path / "missing"), "--yes", "--agents", "claude")
     with pytest.raises(ValueError, match="reserved"):
-        setup_run.install_changes(make_project(tmp_path / "x", "mcpsmith-chrome"), home, {}, ["claude"])
+        setup_run.install_changes(make_project(tmp_path / "x", "toolsmelt-chrome"), home, {}, ["claude"])

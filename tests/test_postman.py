@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from mcpsmith import importers
-from mcpsmith.importers import postman
+from toolsmelt import importers
+from toolsmelt.importers import postman
 
 FIXTURES = Path(__file__).parent / "fixtures" / "postman"
 

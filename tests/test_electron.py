@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from mcpsmith.cli import main
-from mcpsmith.importers import android, electron
+from toolsmelt.cli import main
+from toolsmelt.importers import android, electron
 
 FIXTURES = Path(__file__).parent / "fixtures" / "electron"
 
@@ -335,7 +335,7 @@ def test_cli_writes_source_and_digest(tmp_path, capsys):
     wd = tmp_path / "wd"
     assert main(["app-js", str(FIXTURES), "--base-url", "https://api.demo.test", "-w", str(wd)]) == 0
     out = capsys.readouterr().out
-    assert "all unverified" in out and "mcpsmith probe" in out
+    assert "all unverified" in out and "toolsmelt probe" in out
     saved = json.loads((wd / "source.json").read_text(encoding="utf-8"))
     assert saved["kind"] == "app" and (wd / "digest.md").exists()
     assert "ghp_" not in (wd / "digest.md").read_text(encoding="utf-8")
@@ -348,7 +348,7 @@ def test_cli_rejects_a_missing_path_and_an_empty_app(tmp_path):
 
 
 def test_mcp_tool(tmp_path):
-    from mcpsmith import server
+    from toolsmelt import server
 
     out = asyncio.run(server.smith_app_js(str(FIXTURES), "https://api.demo.test", str(tmp_path / "wd")))
     assert out["endpoints"] == out["unverified"] > 0 and "UNVERIFIED" in out["digest"]
@@ -356,7 +356,7 @@ def test_mcp_tool(tmp_path):
 
 
 def test_electron_notes_hide_secrets_and_are_capped():
-    from mcpsmith.design import digest
+    from toolsmelt.design import digest
 
     code = "fetch(BASE + 'x?api_key=sk_live_123');" + "".join(f"fetch(u{i});" for i in range(300))
     s = electron.parse_sources({"a.js": code})
