@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from mcpsmith.importers import jadx
+from toolsmelt.importers import jadx
 
 FIXTURES = Path(__file__).parent / "fixtures" / "android"
 TREE = {
@@ -103,7 +103,7 @@ def test_cli_dead_end_names_a_known_signer_from_class_names(fake_cli, apk):
 
 
 def test_candidates_still_name_a_known_signer(fake_cli, apk, tmp_path, capsys):
-    from mcpsmith.cli import main
+    from toolsmelt.cli import main
 
     fake_cli.tree["com/xiaomi/smarthome/core/Net.java"] = "class Net {}"
     assert jadx.api_classes_and_signer(apk) == (["com.x.Api"], ("Xiaomi Mi Home", "xiaomi"))

@@ -12,8 +12,8 @@ import truststore
 from mcp import Client
 from pydantic import Field
 
-from mcpsmith.runtime import Api, ApiError, Registry, build_server, http, shape, signin
-from mcpsmith.runtime.signin import xiaomi
+from toolsmelt.runtime import Api, ApiError, Registry, build_server, http, shape, signin
+from toolsmelt.runtime.signin import xiaomi
 
 pytestmark = pytest.mark.anyio
 
@@ -240,7 +240,7 @@ def test_impersonate_falls_back_without_stealth_extra(caplog):
     api = Api(base_url="https://api.example.com", env_prefix="EX_MCP", impersonate=True)
     transport = api._make_transport(None)
     if http._curl() is None:  # curl_cffi not installed
-        assert isinstance(transport, httpx.AsyncHTTPTransport) and "mcpsmith[stealth]" in caplog.text
+        assert isinstance(transport, httpx.AsyncHTTPTransport) and "toolsmelt[stealth]" in caplog.text
 
 
 def test_base_url_env(monkeypatch):
@@ -340,7 +340,7 @@ async def test_browser_auth_chrome_not_running():
         raise ConnectionError("no chrome")
 
     api = make_api(lambda r: httpx.Response(200, json={}), auth={"type": "browser"}, cookie_provider=down)
-    with pytest.raises(ApiError, match="The mcpsmith Chrome is not running"):
+    with pytest.raises(ApiError, match="The toolsmelt Chrome is not running"):
         await api.call("GET", "/x")
 
 
@@ -350,10 +350,10 @@ def test_proxy_overrides_env(monkeypatch):
 
 
 async def test_make_api_browser_needs_running_chrome(monkeypatch):
-    from mcpsmith.model import AuthScheme, Plan
-    from mcpsmith.runtime.interpret import make_api as build
+    from toolsmelt.model import AuthScheme, Plan
+    from toolsmelt.runtime.interpret import make_api as build
 
-    monkeypatch.setattr("mcpsmith.browser.status", lambda: None)
+    monkeypatch.setattr("toolsmelt.browser.status", lambda: None)
     plan = Plan(
         name="x-mcp",
         title="X",
@@ -377,7 +377,7 @@ async def test_browser_auth_cookie_errors_map_to_not_running(exc):
         raise exc("x")
 
     api = make_api(lambda r: httpx.Response(200, json={}), auth={"type": "browser"}, cookie_provider=down)
-    with pytest.raises(ApiError, match="The mcpsmith Chrome is not running"):
+    with pytest.raises(ApiError, match="The toolsmelt Chrome is not running"):
         await api.call("GET", "/x")
 
 

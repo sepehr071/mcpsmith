@@ -1,20 +1,20 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.sepehr071/mcpsmith",
-  "title": "mcpsmith",
+  "name": "io.github.sepehr071/toolsmelt",
+  "title": "toolsmelt",
   "description": "Curated MCP tools from OpenAPI, websites, apps, Postman, cURL or SQL; your agent designs them.",
   "repository": {
-    "url": "https://github.com/sepehr071/mcpsmith",
+    "url": "https://github.com/sepehr071/toolsmelt",
     "source": "github"
   },
-  "websiteUrl": "https://github.com/sepehr071/mcpsmith",
-  "version": "0.6.0",
+  "websiteUrl": "https://github.com/sepehr071/toolsmelt",
+  "version": "0.7.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
-      "identifier": "mcpsmith",
-      "version": "0.6.0",
+      "identifier": "toolsmelt",
+      "version": "0.7.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

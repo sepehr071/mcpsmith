@@ -13,7 +13,7 @@ Python 3.10+, ruff line length 120.
 
 ## Layout
 
-`src/mcpsmith/` holds the code; `model.py` is the data contract (`Source`, `Plan`), so check every stage that reads a field before renaming it. `mcpsmith.runtime` is imported by every generated server: keep it small and backward compatible. Design notes are in `docs/design.md`.
+`src/toolsmelt/` holds the code; `model.py` is the data contract (`Source`, `Plan`), so check every stage that reads a field before renaming it. `toolsmelt.runtime` is imported by every generated server: keep it small and backward compatible. Design notes are in `docs/design.md`.
 
 ## Plans and specs
 
@@ -21,7 +21,7 @@ Larger changes are written down first: a design in `docs/superpowers/specs/` and
 
 ## Live tests
 
-Tests marked `live` call real APIs, LLMs or need a real APK, and are skipped by default (`addopts = "-m 'not live'"`). Run them with `uv run pytest -m live`. They read their inputs from environment variables and skip when those are missing, for example `MCPSMITH_TEST_APK` and `REA_JADX_MCP_JAR` for the Android test.
+Tests marked `live` call real APIs, LLMs or need a real APK, and are skipped by default (`addopts = "-m 'not live'"`). Run them with `uv run pytest -m live`. They read their inputs from environment variables and skip when those are missing, for example `TOOLSMELT_TEST_APK` and `REA_JADX_MCP_JAR` for the Android test.
 
 ## Pull requests
 

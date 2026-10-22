@@ -4,9 +4,9 @@ import asyncio
 import json
 from pathlib import Path
 
-from mcpsmith import server
-from mcpsmith.cli import main
-from mcpsmith.model import load_source
+from toolsmelt import server
+from toolsmelt.cli import main
+from toolsmelt.model import load_source
 
 SKILL = Path(__file__).parent.parent / "skills" / "extract-api" / "SKILL.md"
 
@@ -51,7 +51,7 @@ def test_import_ignores_connect(tmp_path, capsys):
     wd = tmp_path / "wd"
     assert main(["app-desktop", str(har), "-w", str(wd)]) == 0
     out = capsys.readouterr().out
-    assert "1 endpoints" in out and "mcpsmith draft" in out
+    assert "1 endpoints" in out and "toolsmelt draft" in out
     eps = load_source(wd / "source.json").endpoints
     assert len(eps) == 1 and eps[0].verified is True
 

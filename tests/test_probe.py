@@ -3,9 +3,9 @@ import json
 import httpx
 import pytest
 
-from mcpsmith import probe
-from mcpsmith.design import digest, draft, validate
-from mcpsmith.model import AuthScheme, Endpoint, Param, Source
+from toolsmelt import probe
+from toolsmelt.design import digest, draft, validate
+from toolsmelt.model import AuthScheme, Endpoint, Param, Source
 
 
 @pytest.fixture(autouse=True)
@@ -123,7 +123,7 @@ def test_probe_skips_methodless_endpoint_even_with_writes(monkeypatch):
 
 
 def test_methodless_endpoint_is_a_validation_error_and_cannot_be_interpreted():
-    from mcpsmith.runtime.interpret import endpoint_of
+    from toolsmelt.runtime.interpret import endpoint_of
 
     src = _src(Endpoint(id="x", method="", path="/x", verified=False, summary="x"))
     plan = draft(src)

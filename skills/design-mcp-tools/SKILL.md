@@ -1,17 +1,17 @@
 ---
 name: design-mcp-tools
-description: Design or review the tools of an MCP server (a mcpsmith plan.yaml, or any existing server's tool names, descriptions, arguments and output size). Use when the user asks to improve, audit or write tool definitions so agents call them correctly and cheaply.
+description: Design or review the tools of an MCP server (a toolsmelt plan.yaml, or any existing server's tool names, descriptions, arguments and output size). Use when the user asks to improve, audit or write tool definitions so agents call them correctly and cheaply.
 ---
 
 # Design MCP tools
 
-The source of truth is `mcpsmith guide` (prints the tool-design rules). Run it first and follow it where it differs from this list. This file is the checklist and the measuring loop.
+The source of truth is `toolsmelt guide` (prints the tool-design rules). Run it first and follow it where it differs from this list. This file is the checklist and the measuring loop.
 
 ```
-mcpsmith guide
+toolsmelt guide
 ```
 
-Without a shell, call the `smith_guide` MCP tool (`claude mcp add mcpsmith -- uvx mcpsmith mcp`).
+Without a shell, call the `smith_guide` MCP tool (`claude mcp add toolsmelt -- uvx toolsmelt mcp`).
 
 ## Checklist (per plan or server)
 
@@ -48,14 +48,14 @@ Safety and server
 - `read_only: true` only for GET-like reads; writes get `read_only: false` and say what they change.
 - `example` for every tool with required args; real values that return data.
 - `instructions`: the cross-tool workflow ("search, then details by id"), units, currency, language, rate limits, limits of the data.
-- Secrets only via env vars (`<P>_...`) or `mcpsmith secret set`, never in args or descriptions.
-- Site that needs the user's login: `auth: {type: browser, login_path: /login}` (hub only; `login_path` is where the site redirects when logged out). Also set `session_cookie`, the login cookie's name: compare the cookie NAMES Chrome holds logged in vs logged out (`mcpsmith.browser.cookies_for`, names only, never print values). Some sites answer an ended session with HTTP 200 and an empty body. `generate` refuses it: switch to token auth to export.
+- Secrets only via env vars (`<P>_...`) or `toolsmelt secret set`, never in args or descriptions.
+- Site that needs the user's login: `auth: {type: browser, login_path: /login}` (hub only; `login_path` is where the site redirects when logged out). Also set `session_cookie`, the login cookie's name: compare the cookie NAMES Chrome holds logged in vs logged out (`toolsmelt.browser.cookies_for`, names only, never print values). Some sites answer an ended session with HTTP 200 and an empty body. `generate` refuses it: switch to token auth to export.
 
 ## Measure
 
 ```
-mcpsmith validate -w .mcpsmith
-mcpsmith check <project> --json
+toolsmelt validate -w .toolsmelt
+toolsmelt check <project> --json
 ```
 
 `check` calls each tool live with its `example` and reports `ok`, `error`, `chars` (output size) and `empty_fields` (output fields that came back empty).
@@ -67,8 +67,8 @@ mcpsmith check <project> --json
 Tool choice (needs an LLM API key, e.g. `ANTHROPIC_API_KEY`):
 
 ```
-mcpsmith eval -w .mcpsmith --write --provider anthropic
-mcpsmith eval -w .mcpsmith
+toolsmelt eval -w .toolsmelt --write --provider anthropic
+toolsmelt eval -w .toolsmelt
 ```
 
 `--write` asks the LLM for one or two natural questions per tool (expected args from its `example`) plus a few questions no tool fits, saved as `evals.yaml` (never overwritten without `--force`). Review and edit it, then commit it. A plain run sends each question with the tool list exactly as the server exposes it and scores the pick: `score` (cases with right tool and args), tool and arg accuracy, and per tool which tool was picked instead. Pass a generated project instead of `-w` to evaluate it; `--json` and `--min 0.9` for CI.
@@ -76,8 +76,8 @@ mcpsmith eval -w .mcpsmith
 - Right tool, wrong args: improve the arg descriptions (unit, format, one example), add `enum` or `map`.
 - A negative answered with a tool: say in the description what the tool does not cover.
 
-Loop: edit `plan.yaml`, `mcpsmith validate`, `mcpsmith generate -o <project> --force`, `cd <project> && uv run pytest`, `mcpsmith check <project>`. Regenerating overwrites hand edits to `server.py`.
+Loop: edit `plan.yaml`, `toolsmelt validate`, `toolsmelt generate -o <project> --force`, `cd <project> && uv run pytest`, `toolsmelt check <project>`. Regenerating overwrites hand edits to `server.py`.
 
-## Reviewing a server not made with mcpsmith
+## Reviewing a server not made with toolsmelt
 
 Read its tool list, apply the same checklist, and report findings as: tool, problem, concrete rewrite (new name, first-line sentence, trimmed fields). Measure real output sizes by calling the tools, not by guessing. Do not claim a size you did not measure.

@@ -1,5 +1,5 @@
 {
-  "name": "mcpsmith",
+  "name": "toolsmelt",
   "description": "Build curated, tested MCP tools from OpenAPI, websites, apps, Postman, cURL or databases.",
   "owner": {
     "name": "Sepehr Radmard",
@@ -8,7 +8,7 @@
   },
   "plugins": [
     {
-      "name": "mcpsmith",
+      "name": "toolsmelt",
       "source": "./",
       "description": "Skills and an MCP server that guide your coding agent from an API spec, a website, an app or a database to tested MCP tools.",
       "category": "development"

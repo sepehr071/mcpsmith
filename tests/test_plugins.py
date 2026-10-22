@@ -5,11 +5,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from mcpsmith import importers, plugins
-from mcpsmith.design import validate
-from mcpsmith.model import Plan, Source
-from mcpsmith.runtime import signin, transforms
-from mcpsmith.runtime.shape import apply_transforms
+from toolsmelt import importers, plugins
+from toolsmelt.design import validate
+from toolsmelt.model import Plan, Source
+from toolsmelt.runtime import signin, transforms
+from toolsmelt.runtime.shape import apply_transforms
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -51,13 +51,13 @@ class Postman:
 
 
 def test_importer_claims_new_format(install, tmp_path):
-    install("mcpsmith.importers", "postman", Postman())
+    install("toolsmelt.importers", "postman", Postman())
     f = tmp_path / "c.json"
     f.write_text(json.dumps({"info": {"name": "Shop", "schema": "https://schema.getpostman.com/v2.1"}}), "utf-8")
     src = importers.load(str(f))
     assert (src.kind, src.title) == ("postman", "Shop")
     # built-in formats keep precedence even over a plugin that claims everything
-    install("mcpsmith.importers", "greedy", SimpleNamespace(sniff=lambda p, d: True, load=None))
+    install("toolsmelt.importers", "greedy", SimpleNamespace(sniff=lambda p, d: True, load=None))
     plugins.load.cache_clear()
     assert importers.load(str(FIXTURES / "openapi" / "petstore2.yaml")).kind == "openapi"
 
@@ -68,7 +68,7 @@ def test_importer_sees_unparsed_files(install, tmp_path):
         sniff=lambda p, d: seen.append(d) or p.suffix == ".bin",
         load=lambda p, d, **o: Source(kind="bin", title=p.name, base_url="https://x.example"),
     )
-    install("mcpsmith.importers", "bin", curl)
+    install("toolsmelt.importers", "bin", curl)
     f = tmp_path / "x.bin"
     f.write_bytes(b"\xff\xfe\x00binary")
     assert importers.load(str(f)).kind == "bin"
@@ -81,14 +81,14 @@ def test_importer_sees_unparsed_files(install, tmp_path):
 
 def test_transform_plugin_validates_and_runs(install, caplog):
     install(
-        "mcpsmith.transforms",
+        "toolsmelt.transforms",
         "money",
         SimpleNamespace(
             INPUT={"units->cents": lambda v, tz: round(float(v) * 100)},
             OUTPUT={"cents->units": lambda v, tz: v / 100, "unix->date": lambda v, tz: "hijacked"},
         ),
     )
-    with caplog.at_level(logging.WARNING, logger="mcpsmith"):
+    with caplog.at_level(logging.WARNING, logger="toolsmelt"):
         assert "cents->units" in transforms.OUTPUT_NAMES and "units->cents" in transforms.INPUT_NAMES
     assert "already taken" in caplog.text  # cannot override a built-in
     assert transforms.transform_out("unix->date", 1792454400, "UTC") == "2026-10-20"
@@ -128,10 +128,10 @@ def _provider(**overrides):
 
 def test_signin_plugin_found(install, caplog):
     acme = _provider(TITLE="Acme")
-    install("mcpsmith.signin", "acme", acme)
-    install("mcpsmith.signin", "xiaomi", _provider(TITLE="fake"))  # cannot replace a built-in
-    install("mcpsmith.signin", "half", SimpleNamespace(TITLE="Half"))  # misses most of the interface
-    with caplog.at_level(logging.WARNING, logger="mcpsmith"):
+    install("toolsmelt.signin", "acme", acme)
+    install("toolsmelt.signin", "xiaomi", _provider(TITLE="fake"))  # cannot replace a built-in
+    install("toolsmelt.signin", "half", SimpleNamespace(TITLE="Half"))  # misses most of the interface
+    with caplog.at_level(logging.WARNING, logger="toolsmelt"):
         assert signin.provider("acme") is acme
         assert sorted(signin.PROVIDERS) == ["acme", "xiaomi"]
     assert signin.provider("xiaomi").TITLE == "Xiaomi"
@@ -139,12 +139,12 @@ def test_signin_plugin_found(install, caplog):
 
 
 def test_broken_plugin_warns_and_is_skipped(install, caplog, tmp_path):
-    install("mcpsmith.importers", "broken", ImportError("No module named 'missing_dep'"))
-    install("mcpsmith.importers", "bad_sniff", SimpleNamespace(sniff=lambda p, d: 1 / 0))
-    install("mcpsmith.importers", "postman", Postman())
+    install("toolsmelt.importers", "broken", ImportError("No module named 'missing_dep'"))
+    install("toolsmelt.importers", "bad_sniff", SimpleNamespace(sniff=lambda p, d: 1 / 0))
+    install("toolsmelt.importers", "postman", Postman())
     f = tmp_path / "c.json"
     f.write_text(json.dumps({"info": {"name": "Shop", "schema": "postman"}}), "utf-8")
-    with caplog.at_level(logging.WARNING, logger="mcpsmith"):
-        assert list(plugins.load("mcpsmith.importers")) == ["bad_sniff", "postman"]
+    with caplog.at_level(logging.WARNING, logger="toolsmelt"):
+        assert list(plugins.load("toolsmelt.importers")) == ["bad_sniff", "postman"]
         assert importers.load(str(f)).kind == "postman"  # a failing sniff does not block the next plugin
     assert "missing_dep" in caplog.text and "sniff failed" in caplog.text

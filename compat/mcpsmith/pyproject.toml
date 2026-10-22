@@ -1,0 +1,25 @@
+[project]
+name = "mcpsmith"
+version = "0.7.0"
+description = "mcpsmith is now toolsmelt: this package installs toolsmelt and keeps `import mcpsmith` and the mcpsmith command working."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Sepehr Radmard", email = "sepehrr80@gmail.com" }]
+requires-python = ">=3.10"
+classifiers = ["Development Status :: 7 - Inactive", "Programming Language :: Python :: 3"]
+dependencies = ["toolsmelt>=0.7,<1"]
+
+[project.optional-dependencies]
+stealth = ["toolsmelt[stealth]>=0.7,<1"]
+capture = ["toolsmelt[capture]>=0.7,<1"]
+sql = ["toolsmelt[sql]>=0.7,<1"]
+
+[project.urls]
+Homepage = "https://github.com/sepehr071/toolsmelt"
+
+[project.scripts]
+mcpsmith = "toolsmelt.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

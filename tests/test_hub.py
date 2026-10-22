@@ -8,11 +8,11 @@ from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from test_codegen import PLAN, SOURCE
 
-from mcpsmith import secrets, server
-from mcpsmith.hub import Hub
-from mcpsmith.model import AuthScheme, save_plan, save_source
-from mcpsmith.runtime import signin
-from mcpsmith.runtime.signin import xiaomi
+from toolsmelt import secrets, server
+from toolsmelt.hub import Hub
+from toolsmelt.model import AuthScheme, save_plan, save_source
+from toolsmelt.runtime import signin
+from toolsmelt.runtime.signin import xiaomi
 
 pytestmark = pytest.mark.anyio
 
@@ -31,7 +31,7 @@ def workdir(tmp_path, plan=PLAN, name="wd"):
 
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
-    monkeypatch.setenv("MCPSMITH_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("TOOLSMELT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("DEMO_MCP_TOKEN", "t")
 
 
@@ -176,7 +176,7 @@ async def test_connection_proxy_has_no_credentials(tmp_path):
 
 async def test_login_token_step_and_signin_link(tmp_path, hub, monkeypatch):
     hub.connect(workdir(tmp_path))
-    assert "mcpsmith secret set demo-mcp DEMO_MCP_TOKEN" in (await hub.login("demo-mcp"))["next"]
+    assert "toolsmelt secret set demo-mcp DEMO_MCP_TOKEN" in (await hub.login("demo-mcp"))["next"]
 
     saved = {}
     monkeypatch.setattr(xiaomi, "start_login", AsyncMock(return_value=("https://login.example", "https://poll")))

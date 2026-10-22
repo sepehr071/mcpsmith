@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from mcpsmith.cli import main
-from mcpsmith.importers import android, jadx
+from toolsmelt.cli import main
+from toolsmelt.importers import android, jadx
 
 FIXTURES = Path(__file__).parent / "fixtures" / "android"
 FIXTURE = FIXTURES / "interface.java"
@@ -232,7 +232,7 @@ def test_search_pages_through_every_result(monkeypatch, apk):
 
 def test_no_candidates_is_a_dead_end(monkeypatch, apk):
     fake_jadx(monkeypatch, lambda t, a: json.dumps({"items": [], "max_scan_reached": False}))
-    with pytest.raises(RuntimeError, match="mcpsmith browser") as e:
+    with pytest.raises(RuntimeError, match="toolsmelt browser") as e:
         jadx.find_api_classes(apk)
     assert "signin" not in str(e.value)
 
@@ -252,7 +252,7 @@ RETROFIT_DEX = b"dex\n035\x00 Lretrofit2/http/GET; "
     [
         ({"lib/arm64-v8a/libflutter.so": b"", "classes.dex": RETROFIT_DEX}, "Flutter"),
         ({"assets/index.android.bundle": android.HERMES_MAGIC + b"..", "classes.dex": b""}, "Hermes bytecode"),
-        ({"assets/index.android.bundle": b"var a=1;", "classes.dex": b""}, "mcpsmith app-js bundle.js"),
+        ({"assets/index.android.bundle": b"var a=1;", "classes.dex": b""}, "toolsmelt app-js bundle.js"),
         ({"classes.dex": b"dex Lcom/x/Util; "}, "record its traffic"),
         ({"classes.dex": b"x", "classes2.dex": b"Lcom/xiaomi/smarthome/Net; "}, "provider: xiaomi"),
     ],
@@ -324,7 +324,7 @@ def test_cli_lists_candidates_then_writes_source(apk, tmp_path, monkeypatch, cap
     assert main(["app-android", str(apk), "-w", wd]) == 0
     assert "com.x.Api" in capsys.readouterr().out and not (tmp_path / "wd" / "source.json").exists()
     assert main(["app-android", str(apk), "--class", "com.x.Api", "--base-url", "https://demo.test", "-w", wd]) == 0
-    assert "mcpsmith probe" in capsys.readouterr().out
+    assert "toolsmelt probe" in capsys.readouterr().out
     saved = json.loads((tmp_path / "wd" / "source.json").read_text(encoding="utf-8"))
     assert saved["kind"] == "app" and (tmp_path / "wd" / "digest.md").exists()
     assert next(e for e in saved["endpoints"] if e["summary"] == "minified")["method"] == "GET"  # mapping applied
@@ -347,9 +347,9 @@ def test_cli_needs_an_apk_or_a_source_and_rejects_empty_interfaces(apk, tmp_path
 
 @pytest.mark.live
 def test_live_real_apk():
-    apk, jar = os.environ.get("MCPSMITH_TEST_APK"), os.environ.get("REA_JADX_MCP_JAR")
+    apk, jar = os.environ.get("TOOLSMELT_TEST_APK"), os.environ.get("REA_JADX_MCP_JAR")
     if not (apk and jar):
-        pytest.skip("set MCPSMITH_TEST_APK and REA_JADX_MCP_JAR")
+        pytest.skip("set TOOLSMELT_TEST_APK and REA_JADX_MCP_JAR")
     classes = jadx.find_api_classes(Path(apk))
     sources = {c: jadx.class_source(Path(apk), c) for c in classes}
     java = max(sources.values(), key=lambda s: s.count("@"))
@@ -366,7 +366,7 @@ def test_unresolved_parameter_keeps_the_method_and_stays_out_of_the_request():
 
 
 def test_notes_never_carry_source_secrets_and_are_capped():
-    from mcpsmith.design import digest
+    from toolsmelt.design import digest
 
     java = 'interface A { @GET(BASE + "/x?api_key=sk_live_123") Call<X> a(); }'
     s = android.parse_interface(

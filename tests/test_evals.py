@@ -4,10 +4,10 @@ import httpx
 import pytest
 import yaml
 
-from mcpsmith import evals
-from mcpsmith.cli import main
-from mcpsmith.design import llm
-from mcpsmith.model import Plan, save_plan
+from toolsmelt import evals
+from toolsmelt.cli import main
+from toolsmelt.design import llm
+from toolsmelt.model import Plan, save_plan
 
 PLAN = {
     "schema_version": 1,
@@ -71,8 +71,8 @@ def fake(monkeypatch):
     """A fake Anthropic API: case-writing requests get `written`, eval requests the answer for their question."""
     sent = []
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
-    monkeypatch.delenv("MCPSMITH_BASE_URL", raising=False)
-    monkeypatch.delenv("MCPSMITH_MODEL", raising=False)
+    monkeypatch.delenv("TOOLSMELT_BASE_URL", raising=False)
+    monkeypatch.delenv("TOOLSMELT_MODEL", raising=False)
     written = {"cases": []}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -100,7 +100,7 @@ def test_tool_list_is_what_the_server_exposes(workdir):
 
 
 def test_generated_project_exposes_the_same_tool_list(workdir, tmp_path):
-    from mcpsmith.codegen import generate
+    from toolsmelt.codegen import generate
 
     project = tmp_path / "out"
     generate(Plan.model_validate(PLAN), project, None)
@@ -155,7 +155,7 @@ def test_write_cases_takes_args_from_examples(workdir, fake, capsys):
 
 def test_ollama_writes_cases_in_json_mode_and_a_bare_list_is_accepted(workdir, monkeypatch, capsys):
     sent = []
-    monkeypatch.delenv("MCPSMITH_BASE_URL", raising=False)
+    monkeypatch.delenv("TOOLSMELT_BASE_URL", raising=False)
     reply = json.dumps([{"question": "any honey?", "tool": "shop_search", "args": {}}])  # small models drop "cases"
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -226,8 +226,8 @@ def test_loose_comparison(a, b, ok):
 
 def test_openrouter_anthropic_model_caches_the_tool_list(workdir, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-    monkeypatch.delenv("MCPSMITH_MODEL", raising=False)
-    monkeypatch.delenv("MCPSMITH_BASE_URL", raising=False)
+    monkeypatch.delenv("TOOLSMELT_MODEL", raising=False)
+    monkeypatch.delenv("TOOLSMELT_BASE_URL", raising=False)
     sent = []
 
     def handler(request):

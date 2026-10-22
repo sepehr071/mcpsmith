@@ -6,9 +6,9 @@ import httpx
 import pytest
 from mcp import Client
 
-from mcpsmith import __version__, server
-from mcpsmith.cli import main
-from mcpsmith.model import load_plan, save_plan
+from toolsmelt import __version__, server
+from toolsmelt.cli import main
+from toolsmelt.model import load_plan, save_plan
 
 
 @pytest.fixture
@@ -74,8 +74,8 @@ def test_pipeline(spec, tmp_path, capsys):
     assert main(["validate", "-w", wd]) == 0
     out = tmp_path / "out"
     assert main(["generate", "-w", wd, "-o", str(out)]) == 0
-    assert "mcpsmith check" in capsys.readouterr().out
-    for rel in ("pyproject.toml", "server.json", "mcpsmith.yaml", "src/pets_mcp/server.py", "tests/test_tools.py"):
+    assert "toolsmelt check" in capsys.readouterr().out
+    for rel in ("pyproject.toml", "server.json", "toolsmelt.yaml", "src/pets_mcp/server.py", "tests/test_tools.py"):
         assert (out / rel).exists(), rel
 
 
@@ -97,7 +97,7 @@ def test_validate_fails_on_broken_plan(spec, tmp_path, capsys):
 
 def test_errors_are_one_line(tmp_path, capsys):
     assert main(["inspect", str(tmp_path / "missing.json"), "-w", str(tmp_path / "wd")]) == 2
-    assert capsys.readouterr().err.startswith("mcpsmith: error:")
+    assert capsys.readouterr().err.startswith("toolsmelt: error:")
 
 
 def test_guide(capsys):
@@ -110,15 +110,15 @@ def test_schema_and_version(capsys):
     assert "schema_version" in json.loads(capsys.readouterr().out)["properties"]
     with pytest.raises(SystemExit) as e:
         main(["--version"])
-    assert e.value.code == 0 and capsys.readouterr().out.strip() == f"mcpsmith {__version__}"
+    assert e.value.code == 0 and capsys.readouterr().out.strip() == f"toolsmelt {__version__}"
 
 
 def test_missing_file_names_the_command_to_run(tmp_path, capsys):
     wd = str(tmp_path / "wd")
     assert main(["draft", "-w", wd]) == 2
-    assert "run `mcpsmith inspect` first" in capsys.readouterr().err
+    assert "run `toolsmelt inspect` first" in capsys.readouterr().err
     assert main(["validate", "-w", wd]) == 2
-    assert "run `mcpsmith draft` first" in capsys.readouterr().err
+    assert "run `toolsmelt draft` first" in capsys.readouterr().err
 
 
 def test_check_skips_tools_without_examples(spec, tmp_path, monkeypatch, capsys):
@@ -136,7 +136,7 @@ def test_check_skips_tools_without_examples(spec, tmp_path, monkeypatch, capsys)
     capsys.readouterr()
     assert main(["check", str(out)]) == 0
     printed = capsys.readouterr().out
-    assert f"SKIP {get.name}  add example values for ['pet_id'] to mcpsmith.yaml and regenerate" in printed
+    assert f"SKIP {get.name}  add example values for ['pet_id'] to toolsmelt.yaml and regenerate" in printed
     assert seen and not any(r.url.path.startswith("/api/pets/") for r in seen)
 
 
@@ -250,13 +250,13 @@ async def test_server_errors_reach_the_agent(tmp_path):
 
 
 def test_connections_command(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("MCPSMITH_HOME", str(tmp_path))
+    monkeypatch.setenv("TOOLSMELT_HOME", str(tmp_path))
     assert main(["connections"]) == 0
     assert "(none)" in capsys.readouterr().out
 
 
 def test_setup_and_install_parse():
-    from mcpsmith.cli import build_parser
+    from toolsmelt.cli import build_parser
 
     p = build_parser()
     assert not p.parse_args(["setup"]).rea and p.parse_args(["setup", "--rea"]).rea

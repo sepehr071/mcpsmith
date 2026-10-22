@@ -10,9 +10,9 @@ import httpx
 import pytest
 import yaml
 
-from mcpsmith import check
-from mcpsmith.codegen import generate
-from mcpsmith.model import AuthScheme, Endpoint, Output, Plan, Source, Tool, ToolArg, load_plan, save_plan
+from toolsmelt import check
+from toolsmelt.codegen import generate
+from toolsmelt.model import AuthScheme, Endpoint, Output, Plan, Source, Tool, ToolArg, load_plan, save_plan
 
 try:
     import tomllib
@@ -54,7 +54,7 @@ PLAN = Plan(
             args=[
                 ToolArg(name="item_id", type="integer", description="Item id, e.g. 7.", required=True, to="path.itemId")
             ],
-            fixed={"header.X-Client": "mcpsmith"},
+            fixed={"header.X-Client": "toolsmelt"},
             output=Output(fields={"id": "id", "name": "name", "price": "price.value"}),
             example={"item_id": 7},
         ),
@@ -120,7 +120,7 @@ def test_layout_and_refuses_non_empty(project):
         "README.md",
         "LICENSE",
         ".gitignore",
-        "mcpsmith.yaml",
+        "toolsmelt.yaml",
         "src/demo_mcp/__init__.py",
         "src/demo_mcp/server.py",
         "tests/conftest.py",
@@ -134,7 +134,7 @@ def test_layout_and_refuses_non_empty(project):
     ]:
         assert (project / rel).is_file(), rel
     assert not (project / "tests/fixtures/demo_create.json").exists()  # no response example
-    assert load_plan(project / "mcpsmith.yaml") == PLAN
+    assert load_plan(project / "toolsmelt.yaml") == PLAN
     with pytest.raises(FileExistsError, match="--force"):
         generate(PLAN, project, SOURCE)
     assert generate(PLAN, project, SOURCE, force=True)
@@ -290,7 +290,7 @@ def test_check_run(project, monkeypatch):
     assert json.loads(post.content) == {"item": {"name": "x", "kind": "tea"}}
     assert "authorization" not in post.headers  # the credential goes only to the base URL host
     get = next(r for r in seen if r.url.path.endswith("/items/7"))
-    assert get.headers["x-client"] == "mcpsmith" and get.headers["authorization"] == "Bearer t"
+    assert get.headers["x-client"] == "toolsmelt" and get.headers["authorization"] == "Bearer t"
     search_q = next(r for r in seen if r.url.path.endswith("/items")).url.params
     assert search_q["filters.minPrice"] == "5" and search_q["sort"] == "date_desc" and search_q["size"] == "10"
 
@@ -298,10 +298,10 @@ def test_check_run(project, monkeypatch):
 def test_check_skips_write_methods_without_opt_in(project, tmp_path, monkeypatch):
     copy = tmp_path / "p"
     shutil.copytree(project, copy)
-    plan = load_plan(copy / "mcpsmith.yaml")
+    plan = load_plan(copy / "toolsmelt.yaml")
     plan.tools[2].read_only = True  # a hand-edited project: validate() would reject this plan
     plan.tools[2].endpoint = "DELETE /items"
-    save_plan(plan, copy / "mcpsmith.yaml")
+    save_plan(plan, copy / "toolsmelt.yaml")
     seen = []
 
     def handler(request):
@@ -381,7 +381,7 @@ def test_templates(project):
     ci = (project / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     assert "ruff check" in ci and "format --check" not in ci
     ignore = (project / ".gitignore").read_text(encoding="utf-8").split()
-    assert "*.har" in ignore and ".mcpsmith/" in ignore
+    assert "*.har" in ignore and ".toolsmelt/" in ignore
     assert (
         (project / "README.md").read_text(encoding="utf-8").startswith("<!-- mcp-name: io.github.someone/demo-mcp -->")
     )
@@ -389,10 +389,10 @@ def test_templates(project):
 
 def test_generated_dependency_floor(tmp_path):
     generate(PLAN, tmp_path / "a", SOURCE)
-    assert '"mcpsmith>=0.6,<1"' in (tmp_path / "a/pyproject.toml").read_text(encoding="utf-8")  # run_tool is new in 0.6
+    assert '"toolsmelt>=0.7,<1"' in (tmp_path / "a/pyproject.toml").read_text(encoding="utf-8")  # first toolsmelt
     tools = [PLAN.tools[0], PLAN.tools[2].model_copy(update={"body_encoding": "multipart"})]
     generate(PLAN.model_copy(update={"tools": tools, "impersonate": True}), tmp_path / "b", SOURCE)
-    assert '"mcpsmith[stealth]>=0.6,<1"' in (tmp_path / "b/pyproject.toml").read_text(encoding="utf-8")
+    assert '"toolsmelt[stealth]>=0.7,<1"' in (tmp_path / "b/pyproject.toml").read_text(encoding="utf-8")
     assert '"body_encoding": "multipart"' in (tmp_path / "b/src/demo_mcp/server.py").read_text(encoding="utf-8")
 
 
@@ -424,7 +424,7 @@ def test_signin_project_has_login_and_replays_encrypted(tmp_path):
     code = (out / "src/demo_mcp/server.py").read_text(encoding="utf-8")
     assert 'secret=signin.keychain("demo-mcp")' in code and '"provider": "xiaomi"' in code
     assert "async def demo_login(" in code and 'signin.login("demo-mcp", "DEMO_MCP_SESSION", api, again)' in code
-    assert '"mcpsmith>=0.6,<1"' in (out / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"toolsmelt>=0.7,<1"' in (out / "pyproject.toml").read_text(encoding="utf-8")
     assert "DEMO_MCP_SESSION=" not in (out / "README.md").read_text(encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("DEMO_MCP")} | {"PYTHONPATH": str(out / "src")}
     r = subprocess.run(

@@ -4,8 +4,8 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from mcpsmith.design import digest, draft, guide, llm, validate
-from mcpsmith.model import AuthScheme, Endpoint, Output, Paginate, Param, Plan, Source, Step, Tool, ToolArg
+from toolsmelt.design import digest, draft, guide, llm, validate
+from toolsmelt.model import AuthScheme, Endpoint, Output, Paginate, Param, Plan, Source, Step, Tool, ToolArg
 
 PRODUCTS = [
     {
@@ -426,7 +426,7 @@ def test_validate_source_method_must_match_read_only():
         lambda d: d.update(name="class"),
         lambda d: d.update(name="1shop"),
         lambda d: d.update(name="json"),
-        lambda d: d.update(name="mcpsmith"),
+        lambda d: d.update(name="toolsmelt"),
         lambda d: d.update(name="a" * 64),
         lambda d: d.update(prefix="shop\n"),
         lambda d: d.update(prefix="_shop"),
@@ -580,8 +580,8 @@ def calls(monkeypatch):
     sent = []
     monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
-    monkeypatch.delenv("MCPSMITH_BASE_URL", raising=False)
-    monkeypatch.delenv("MCPSMITH_MODEL", raising=False)
+    monkeypatch.delenv("TOOLSMELT_BASE_URL", raising=False)
+    monkeypatch.delenv("TOOLSMELT_MODEL", raising=False)
 
     def use(replies, shape):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -640,7 +640,7 @@ def test_design_openai_compatible(calls):
 
 
 def test_design_ollama_gives_up(calls, monkeypatch):
-    monkeypatch.setenv("MCPSMITH_BASE_URL", "http://localhost:9999/v1/")
+    monkeypatch.setenv("TOOLSMELT_BASE_URL", "http://localhost:9999/v1/")
     sent = calls([BAD, BAD], lambda text: {"choices": [{"message": {"content": text}}]})
     with pytest.raises(ValueError, match="still invalid after 2 rounds"):
         llm.design(shop(), provider="ollama", max_rounds=2)
