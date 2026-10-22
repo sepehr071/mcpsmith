@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import argparse
 import functools
+import hmac
 import inspect
 import json
 import logging
+import os
+import sys
 from collections.abc import Callable
 from typing import Any
 
@@ -65,6 +69,8 @@ def build_server(
     website_url: str | None = None,
 ) -> MCPServer:
     mcp = MCPServer(name, title=title, instructions=instructions, version=version, website_url=website_url)
+    # MCPServer turns on INFO logging; httpx would then log every URL, a query credential included (tests too).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     for fn, tool_title, read_only in registry.tools:
         annotations = READ_ONLY if read_only else WRITE
         mcp.add_tool(compact(fn), title=tool_title, annotations=annotations, structured_output=False)
@@ -74,6 +80,51 @@ def build_server(
     return mcp
 
 
-def run(mcp: MCPServer) -> None:
-    logging.getLogger("httpx").setLevel(logging.WARNING)  # one INFO line per request floods client logs (and URLs)
-    mcp.run()
+LOOPBACK = {"127.0.0.1", "localhost", "::1"}
+
+
+def bearer_guard(app: Any, token: str) -> Any:
+    """ASGI wrapper: HTTP requests need `Authorization: Bearer <token>`, else 401 (lifespan events pass through)."""
+    want = f"Bearer {token}".encode()
+
+    async def guarded(scope, receive, send):
+        if scope["type"] == "http" and not hmac.compare_digest(dict(scope["headers"]).get(b"authorization", b""), want):
+            await send({"type": "http.response.start", "status": 401, "headers": [(b"www-authenticate", b"Bearer")]})
+            await send({"type": "http.response.body", "body": b"missing or wrong bearer token"})
+            return
+        await app(scope, receive, send)
+
+    return guarded
+
+
+def run(mcp: MCPServer, argv: list[str] | None = None) -> None:
+    """Serve on stdio (default) or Streamable HTTP at http://HOST:PORT/mcp.
+
+    Options: `--transport stdio|http`, `--host` (default 127.0.0.1), `--port` (default 8000); env `MCP_TRANSPORT`,
+    `MCP_HOST`, `MCP_PORT` set the defaults. Unknown arguments are left alone. With env `MCP_AUTH_TOKEN` set, HTTP
+    clients must send `Authorization: Bearer <token>`.
+    """
+    p = argparse.ArgumentParser(prog=mcp.name, add_help=False, allow_abbrev=False)
+    p.add_argument("--transport", default=os.environ.get("MCP_TRANSPORT") or "stdio")
+    p.add_argument("--host", default=os.environ.get("MCP_HOST") or "127.0.0.1")
+    p.add_argument("--port", type=int, default=os.environ.get("MCP_PORT") or 8000)  # argparse converts str defaults
+    args, _ = p.parse_known_args(sys.argv[1:] if argv is None else argv)
+    if args.transport not in ("stdio", "http"):
+        p.error(f"transport {args.transport!r}: use stdio or http")
+    if args.transport == "stdio":
+        mcp.run()
+        return
+    token = os.environ.get("MCP_AUTH_TOKEN", "")
+    if token:
+        import uvicorn  # a dependency of the mcp SDK's HTTP transport
+
+        app = bearer_guard(mcp.streamable_http_app(host=args.host), token)
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+        return
+    if args.host not in LOOPBACK:
+        print(
+            f"{mcp.name}: warning: serving on {args.host}:{args.port} with no authentication; anyone who can reach "
+            "it can call every tool (set MCP_AUTH_TOKEN to require a bearer token)",
+            file=sys.stderr,
+        )
+    mcp.run("streamable-http", host=args.host, port=args.port)

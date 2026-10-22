@@ -334,7 +334,7 @@ def test_har_leaks_no_secrets_or_personal_data():
             assert leak not in text, leak
         for keep in ("Red shoes", "19.5", "3fa85f64-5717-4562-b3fc-2c963f66afa6", "Hat", "user@example.com"):
             assert keep in text, keep
-    assert src.headers == {"accept": "application/json", "referer": "https://shop.example.com/app"}
+    assert src.headers == {"accept": "application/json", "referer": "https://shop.example.com"}
     eps = by_id(src)
     assert [p.name for p in eps["GET /v1/items"].params] == ["page"]
     assert eps["POST /v1/items"].body_example["price"] == 5
@@ -390,3 +390,388 @@ def test_rea_scenario_capture():
     assert ep.body_example["query"] == "mcp"
     assert len(ep.response_example["hits"]) == 2
     assert "28f0e1ec" not in json.dumps(src.model_dump())  # key from the capture URL is not kept
+
+
+# ---------- audit regressions ----------
+
+
+def _entry(method, url, status=200, text="{}", mime="application/json", headers=None, post=None):
+    req = {"method": method, "url": url, "headers": headers or []}
+    if post is not None:
+        req["postData"] = post
+    return {"request": req, "response": {"status": status, "content": {"mimeType": mime, "text": text}}}
+
+
+def test_referer_keeps_only_the_site_and_ids_in_header_values_are_dropped():
+    headers = [
+        {"name": "Referer", "value": "https://ex.com/invite/Zq8Lm2Np5Rs7Tv9Wx1Yz/accept?x=1"},
+        {"name": "Origin", "value": "https://user:pw@ex.com"},
+        {"name": "X-Tenant", "value": "acme-corp"},
+        {"name": "X-Context", "value": "org/Ab9xQ2kLm7Pz4Rt8Yw3e/main"},
+    ]
+    src = har.parse(
+        {"log": {"entries": [_entry("GET", f"https://api.ex.com/v1/p{i}", headers=headers) for i in range(3)]}}
+    )
+    assert src.headers == {"referer": "https://ex.com", "origin": "https://ex.com", "x-tenant": "acme-corp"}
+
+
+SECRET_NAMES = [
+    *"clientsecret userpassword appkey accesskey privatekey authkey passphrase token2 X-App-Key".split(),
+    *"access_key_id client_secret cvv pin apiToken".split(),
+]
+ORDINARY_NAMES = [
+    *"keyboard monkey keyword passenger_count compass author description inside design hockey".split(),
+    *"shipping postcode title price page".split(),
+]
+
+
+@pytest.mark.parametrize("name", SECRET_NAMES)
+def test_secret_compound_names(name):
+    assert har._is_secret(name)
+
+
+@pytest.mark.parametrize("name", ORDINARY_NAMES)
+def test_ordinary_names_are_not_secret(name):
+    assert not har._is_secret(name)
+
+
+def test_scrub_name_value_pairs_and_keys():
+    out = har._scrub(
+        {
+            "fields": [
+                {"name": "api_token", "value": "SECRETPAIR1"},
+                {"key": "client_secret", "value": "SECRETPAIR2"},
+                {"name": "email", "value": "pair@leak.com"},
+                {"name": "color", "value": "red"},
+            ],
+            "byUser": {"jane@leak.com": 3, "+989121234567": 1},
+        }
+    )
+    assert out["fields"] == [
+        {"name": "api_token", "value": "<redacted>"},
+        {"key": "<redacted>", "value": "<redacted>"},  # a field called "key" was already masked
+        {"name": "email", "value": "user@example.com"},
+        {"name": "color", "value": "red"},
+    ]
+    assert "jane@leak.com" not in json.dumps(out) and "9121234567" not in json.dumps(out)
+
+
+def test_har_form_and_multipart_bodies():
+    form = {"mimeType": "application/x-www-form-urlencoded", "text": "user=bob&remember=1&tag=a&tag=b&password=pw9"}
+    boundary = "----B"
+    multipart = (
+        f'--{boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\nHello\r\n'
+        f'--{boundary}\r\nContent-Disposition: form-data; name="avatar"; filename="me.png"\r\n'
+        f"Content-Type: image/png\r\n\r\nPNGDATA\r\n--{boundary}--\r\n"
+    )
+    entries = [
+        _entry("POST", "https://x.example.com/v1/login", post=form),
+        _entry(
+            "POST",
+            "https://x.example.com/v1/upload",
+            post={"mimeType": f"multipart/form-data; boundary={boundary}", "text": multipart},
+        ),
+        _entry(
+            "POST",
+            "https://x.example.com/v1/note",
+            post={
+                "mimeType": "multipart/form-data",
+                "params": [{"name": "n", "value": "hi"}, {"name": "f", "fileName": "a.txt"}],
+            },
+        ),
+        _entry("POST", "https://x.example.com/v1/json", post={"mimeType": "application/json", "text": '{"a": 1}'}),
+    ]
+    eps = by_id(har.parse({"log": {"entries": entries}}))
+    login = eps["POST /v1/login"]
+    assert login.body_encoding == "form"
+    assert login.body_example == {"user": "bob", "remember": "1", "tag": ["a", "b"], "password": "<redacted>"}
+    up = eps["POST /v1/upload"]
+    assert (up.body_encoding, up.body_example) == ("multipart", {"title": "Hello"})
+    assert "avatar" in up.description and "PNGDATA" not in up.model_dump_json()
+    note = eps["POST /v1/note"]
+    assert (note.body_encoding, note.body_example) == ("multipart", {"n": "hi"}) and "f" in note.description
+    assert eps["POST /v1/json"].body_encoding == "json"
+
+
+def test_har_graphql_operations_are_separate_endpoints():
+    def gql(body):
+        return _entry(
+            "POST", "https://x.example.com/graphql", post={"mimeType": "application/json", "text": json.dumps(body)}
+        )
+
+    entries = [
+        gql(
+            {
+                "operationName": "GetUser",
+                "query": "query GetUser($id: ID!) { user(id: $id) { name } }",
+                "variables": {"id": 1},
+            }
+        ),
+        gql(
+            {
+                "operationName": "GetUser",
+                "query": "query GetUser($id: ID!) { user(id: $id) { name } }",
+                "variables": {"id": 2},
+            }
+        ),
+        gql({"query": "mutation AddItem { addItem { id } }"}),
+        gql({"query": "{ me { id } }"}),
+        _entry("GET", "https://x.example.com/graphql?query=query%20Ping%20%7B%20ping%20%7D"),
+        _entry(
+            "POST", "https://x.example.com/search", post={"mimeType": "application/json", "text": '{"query": "shoes"}'}
+        ),
+    ]
+    eps = by_id(har.parse({"log": {"entries": entries}}))
+    anon = next(
+        i for i in eps if i.startswith("POST /graphql#") and i not in ("POST /graphql#GetUser", "POST /graphql#AddItem")
+    )
+    assert set(eps) == {"POST /graphql#GetUser", "POST /graphql#AddItem", anon, "GET /graphql#Ping", "POST /search"}
+    assert len(anon) == len("POST /graphql#") + 8  # a short hash of the query
+    assert eps["POST /graphql#GetUser"].count == 2 and eps["POST /graphql#GetUser"].path == "/graphql"
+    assert "addItem" in eps["POST /graphql#AddItem"].body_example["query"]
+
+
+def _ref_doc(schemas, paths):
+    return {"openapi": "3.0.0", "info": {"title": "t"}, "paths": paths, "components": {"schemas": schemas}}
+
+
+def _get(ref):
+    return {"get": {"responses": {"200": {"content": {"application/json": {"schema": {"$ref": ref}}}}}}}
+
+
+def test_deref_dense_graph_is_fast_and_small():
+    n, fan = 40, 3
+    schemas = {
+        f"S{i}": {
+            "type": "object",
+            "properties": {f"p{j}": {"$ref": f"#/components/schemas/S{(i + j + 1) % n}"} for j in range(fan)},
+        }
+        for i in range(n)
+    }
+    doc = _ref_doc(schemas, {f"/r{i}": _get(f"#/components/schemas/S{i % n}") for i in range(200)})
+    start = time.perf_counter()
+    src = openapi.parse(doc)
+    assert time.perf_counter() - start < 2 and len(src.model_dump_json()) < 5_000_000  # was 63 s and 137 MB
+
+
+def test_deref_deep_chain_and_cycle_can_be_saved(tmp_path):
+    from mcpsmith.model import save_source
+
+    chain = {
+        f"S{i}": {"type": "object", "properties": {"n": {"$ref": f"#/components/schemas/S{i + 1}"}}} for i in range(200)
+    }
+    chain["S200"] = {"type": "string"}
+    openapi.parse(_ref_doc(chain, {"/a": _get("#/components/schemas/S0")}))  # was RecursionError
+    cycle = {
+        f"S{i}": {"type": "object", "properties": {"next": {"$ref": f"#/components/schemas/S{(i + 1) % 60}"}}}
+        for i in range(60)
+    }
+    src = openapi.parse(_ref_doc(cycle, {"/a": _get("#/components/schemas/S0")}))
+    save_source(src, tmp_path / "source.json")  # was "Circular reference detected"
+
+
+def test_openapi_body_encodings_and_file_parts():
+    doc = {
+        "openapi": "3.0.0",
+        "info": {"title": "t"},
+        "servers": [{"url": "https://x.example.com"}],
+        "paths": {
+            "/token": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/x-www-form-urlencoded": {
+                                "schema": {"type": "object", "properties": {"grant_type": {"type": "string"}}}
+                            }
+                        }
+                    },
+                    "responses": {},
+                }
+            },
+            "/upload": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "multipart/form-data": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["file", "title"],
+                                    "properties": {
+                                        "file": {"type": "string", "format": "binary"},
+                                        "title": {"type": "string"},
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    "responses": {},
+                }
+            },
+            "/json": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {"schema": {"type": "object"}},
+                            "application/x-www-form-urlencoded": {"schema": {"type": "object"}},
+                        }
+                    },
+                    "responses": {},
+                }
+            },
+        },
+    }
+    eps = by_id(openapi.parse(doc))
+    assert (eps["POST /token"].body_encoding, eps["POST /token"].body_example) == ("form", {"grant_type": "string"})
+    up = eps["POST /upload"]
+    assert (up.body_encoding, up.body_example, up.body_schema["required"]) == (
+        "multipart",
+        {"title": "string"},
+        ["title"],
+    )
+    assert "file" in up.description and eps["POST /json"].body_encoding == "json"
+
+    sw2 = {
+        "swagger": "2.0",
+        "info": {},
+        "host": "x.example.com",
+        "paths": {
+            "/up": {
+                "post": {
+                    "parameters": [
+                        {"name": "f", "in": "formData", "type": "file"},
+                        {"name": "n", "in": "formData", "type": "string"},
+                    ],
+                    "responses": {},
+                }
+            },
+            "/form": {"post": {"parameters": [{"name": "n", "in": "formData", "type": "string"}], "responses": {}}},
+            "/mp": {
+                "post": {
+                    "consumes": ["multipart/form-data"],
+                    "parameters": [{"name": "n", "in": "formData", "type": "string"}],
+                    "responses": {},
+                }
+            },
+        },
+    }
+    eps = by_id(openapi.parse(sw2))
+    assert (eps["POST /up"].body_encoding, list(eps["POST /up"].body_schema["properties"])) == ("multipart", ["n"])
+    assert "f" in eps["POST /up"].description
+    assert eps["POST /form"].body_encoding == "form" and eps["POST /mp"].body_encoding == "multipart"
+
+
+def test_openapi_notes_external_refs_unsupported_auth_and_relative_base():
+    doc = {
+        "openapi": "3.0.0",
+        "info": {"title": "t"},
+        "servers": [{"url": "/api/v1"}],
+        "components": {
+            "securitySchemes": {
+                "k": {"type": "apiKey", "in": "header", "name": "X-Key"},
+                "mtls": {"type": "mutualTLS"},
+                "digest": {"type": "http", "scheme": "digest"},
+            }
+        },
+        "paths": {
+            "/ext": {"get": {"parameters": [{"$ref": "common.yaml#/components/parameters/Page"}], "responses": {}}},
+            "/ref": {"$ref": "paths.yaml#/item"},
+            "/token": {"post": {"security": [{"mtls": []}, {"k": [], "digest": []}], "responses": {}}},
+        },
+    }
+    src = openapi.parse(doc)
+    eps = by_id(src)
+    assert "'/api/v1' has no host" in src.description
+    assert "mtls (mutualTLS)" in src.description and "digest (http digest)" in src.description
+    assert "common.yaml#/components/parameters/Page" in src.description and "paths.yaml#/item" in src.description
+    assert "common.yaml" in eps["GET /ext"].description
+    token = eps["POST /token"]
+    assert token.auth == ["k"] and "digest, mtls" in token.description and "k + digest" in token.description
+
+
+def test_openapi_response_prefers_200_with_content():
+    op = {
+        "responses": {
+            "204": {"description": "gone"},
+            "200": {
+                "content": {
+                    "application/json": {"schema": {"type": "object", "properties": {"x": {"type": "integer"}}}}
+                }
+            },
+        }
+    }
+    doc = {
+        "openapi": "3.0.0",
+        "info": {},
+        "servers": [{"url": "https://x.example.com"}],
+        "paths": {"/d": {"delete": op}},
+    }
+    assert openapi.parse(doc).endpoints[0].response_example == {"x": 0}
+
+
+def test_har_path_emails_opaque_values_and_oauth_query():
+    entries = [
+        _entry("GET", "https://x.example.com/v1/users/jane%40leak.com/profile"),
+        _entry("GET", "https://x.example.com/v1/reset/Ab9xQ2kLm7Pz4Rt8Yw3e"),
+        _entry("GET", "https://x.example.com/v1/callback?code=OAUTHCODE77&state=STATE88&lang=fa"),
+    ]
+    src = har.parse({"log": {"entries": entries}})
+    eps = by_id(src)
+    assert set(eps) == {"GET /v1/users/{user_id}/profile", "GET /v1/reset/{reset_id}", "GET /v1/callback"}
+    assert eps["GET /v1/reset/{reset_id}"].params[0].example is None
+    q = {p.name: p.example for p in eps["GET /v1/callback"].params}
+    assert q == {"code": "<redacted>", "state": "<redacted>", "lang": "fa"}
+    dump = src.model_dump_json()
+    assert not any(s in dump for s in ("jane", "Ab9xQ2kLm7Pz4Rt8Yw3e", "OAUTHCODE77", "STATE88"))
+
+
+def test_har_keeps_writes_without_a_json_answer():
+    entries = [
+        _entry("DELETE", "https://x.example.com/v1/items/42", status=204, text="", mime=""),
+        _entry("PUT", "https://x.example.com/v1/items/42", text="ok", mime="text/plain"),
+        _entry("GET", "https://x.example.com/page", text="<html>", mime="text/html"),
+        _entry("POST", "https://x.example.com/v1/fail", status=500, text="oops", mime="text/plain"),
+    ]
+    assert set(by_id(har.parse({"log": {"entries": entries}}))) == {
+        "DELETE /v1/items/{item_id}",
+        "PUT /v1/items/{item_id}",
+    }
+
+
+@pytest.mark.parametrize(
+    "name, text",
+    [
+        (
+            "bad.har",
+            json.dumps(
+                {
+                    "log": {
+                        "entries": [
+                            {
+                                "request": {"url": "https://x.example.com/a"},
+                                "response": {"status": 200, "content": {"mimeType": "application/json", "text": "{}"}},
+                            }
+                        ]
+                    }
+                }
+            ),
+        ),
+        (
+            "bad.json",
+            json.dumps({"openapi": "3.0.0", "info": {}, "paths": {"/a": {"get": {"parameters": [{"in": "query"}]}}}}),
+        ),
+        (
+            "bad-rea.json",
+            json.dumps(
+                {
+                    "predicate_type": "rea.browser-scenario-capture",
+                    "normalized_result": {"events": {"items": [{"transaction_id": 1, "kind": "request"}]}},
+                }
+            ),
+        ),
+    ],
+)
+def test_malformed_input_is_a_value_error(tmp_path, name, text):
+    (tmp_path / name).write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed") as e:
+        importers.load(str(tmp_path / name))
+    assert name in str(e.value)  # the error names the file

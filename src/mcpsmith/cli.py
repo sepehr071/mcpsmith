@@ -5,16 +5,20 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import sys
 from pathlib import Path
 
 import httpx
 import yaml
 
+from . import __version__
 from .model import Plan, Source, load_plan, load_source, save_plan, save_source
 
 DEFAULT_WORKDIR = ".mcpsmith"
 EXPECTED = (OSError, ValueError, RuntimeError, ImportError, httpx.HTTPError, yaml.YAMLError)
+# A missing file of the pipeline: the command that writes it.
+WRITTEN_BY = {"source.json": "mcpsmith inspect", "plan.yaml": "mcpsmith draft", "mcpsmith.yaml": "mcpsmith generate"}
 
 
 # ---------- steps shared with the MCP server ----------
@@ -145,14 +149,15 @@ def split_issues(issues) -> tuple[list[str], list[str]]:
     return errors, warnings
 
 
-def draft_plan(workdir: Path, name: str | None, force: bool) -> Path:
+def draft_plan(workdir: Path, name: str | None, force: bool, notes: list[str] | None = None) -> Path:
+    """Write <workdir>/plan.yaml; endpoints the draft left out are explained in `notes`."""
     from .design import draft
 
     plan_path = workdir / "plan.yaml"
     if plan_path.exists() and not force:
         raise ValueError(f"{plan_path} already exists (use --force to overwrite it)")
     source = load_source(workdir / "source.json")
-    save_plan(draft(source, name), plan_path)
+    save_plan(draft(source, name, notes), plan_path)
     return plan_path
 
 
@@ -181,8 +186,11 @@ def cmd_inspect(args) -> int:
 
 
 def cmd_draft(args) -> int:
-    plan_path = draft_plan(Path(args.workdir), args.name, args.force)
+    notes: list[str] = []
+    plan_path = draft_plan(Path(args.workdir), args.name, args.force, notes)
     plan = load_plan(plan_path)
+    for note in notes:
+        print(f"note: {note}")
     print(f"wrote {plan_path} ({len(plan.tools)} tools)")
     print(f"next: edit it (see `mcpsmith guide`), then `mcpsmith validate{_flags(args)}`")
     return 0
@@ -248,13 +256,35 @@ def cmd_check(args) -> int:
         return 0 if all(r.ok for r in results) else 1
     for r in results:
         if r.skipped:
-            print(f"SKIP {r.tool}  changes data on the live API; add --writes to call it")
+            print(f"SKIP {r.tool}  {r.reason}")
         elif r.ok:
             empty = f"  empty: {', '.join(r.empty_fields)}" if r.empty_fields else ""
             print(f"OK   {r.tool}  {r.chars} chars{empty}")
         else:
             print(f"FAIL {r.tool}  {r.error}")
     return 0 if all(r.ok for r in results) else 1
+
+
+def cmd_eval(args) -> int:
+    from . import evals
+
+    project = Path(args.project) if args.project else None
+    plan, tools, path = evals.target(project, Path(args.workdir))
+    again = f"mcpsmith eval {args.project}" if project else f"mcpsmith eval{_flags(args)}"
+    if args.write:
+        if path.exists() and not args.force:
+            raise ValueError(f"{path} already exists (use --force to overwrite it)")
+        cases, notes = evals.write_cases(plan, tools, args.provider, args.model)
+        evals.save_cases(cases, path)
+        for note in notes:
+            print(f"note: {note}")
+        print(f"wrote {path} ({len(cases)} cases)\nnext: review and edit it, then `{again}`")
+        return 0
+    if not path.exists():
+        raise ValueError(f"{path} not found; write cases with `{again} --write` first")
+    rep = evals.run(plan, tools, evals.load_cases(path, tools), args.provider, args.model, args.concurrency)
+    print(json.dumps(rep, ensure_ascii=False, indent=1) if args.json else evals.table(rep))
+    return 1 if rep["score"] < args.min else 0
 
 
 def cmd_probe(args) -> int:
@@ -324,6 +354,11 @@ def cmd_guide(args) -> int:
     from .design import guide
 
     print(guide())
+    return 0
+
+
+def cmd_schema(args) -> int:
+    print(json.dumps(Plan.model_json_schema(), ensure_ascii=False, indent=1))
     return 0
 
 
@@ -400,6 +435,10 @@ def cmd_install(args) -> int:
 def cmd_mcp(args) -> int:
     from .server import main as serve
 
+    # runtime.run reads these; argv may not be sys.argv when main() is called directly
+    for env, value in (("MCP_TRANSPORT", args.transport), ("MCP_HOST", args.host), ("MCP_PORT", args.port)):
+        if value is not None:
+            os.environ[env] = str(value)
     serve()
     return 0
 
@@ -411,6 +450,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mcpsmith", description="Turn an OpenAPI file or a recorded website session into a curated MCP server."
     )
+    p.add_argument("--version", action="version", version=f"mcpsmith {__version__}")
     sub = p.add_subparsers(dest="command", required=True, metavar="command")
 
     def command(name, fn, help, workdir=True):
@@ -427,8 +467,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("-o", "--output", default="site.har")
     sp.add_argument("--host", action="append", help="keep only traffic to this host (repeatable)")
 
-    sp = command("inspect", cmd_inspect, "read an OpenAPI file or HAR (path or URL); write source.json and digest.md")
-    sp.add_argument("source", help="OpenAPI/Swagger file or HAR, path or URL")
+    sp = command(
+        "inspect",
+        cmd_inspect,
+        "read an OpenAPI file, HAR, Postman collection or cURL commands; write source.json and digest.md",
+    )
+    sp.add_argument("source", help="OpenAPI/Swagger file, HAR or Postman collection (path or URL), or a cURL file")
     sp.add_argument("--host", action="append", help="keep only traffic to this host (HAR; repeatable)")
     sp.add_argument("--budget", type=int, default=60000, help="digest size limit in characters (default 60000)")
 
@@ -453,6 +497,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("project")
     sp.add_argument("--json", action="store_true")
     sp.add_argument("--writes", action="store_true", help="also call tools that change data (read_only: false)")
+
+    sp = command(
+        "eval",
+        cmd_eval,
+        "score how well an LLM (API key needed) picks the right tool and arguments for the questions in evals.yaml",
+    )
+    sp.add_argument("project", nargs="?", help="a generated project (default: the plan in the working directory)")
+    sp.add_argument("--write", action="store_true", help="let the LLM write evals.yaml from the tools and examples")
+    sp.add_argument("--force", action="store_true", help="with --write: overwrite an existing evals.yaml")
+    sp.add_argument("--provider", choices=["anthropic", "openai", "openrouter", "ollama"], default="anthropic")
+    sp.add_argument("--model")
+    sp.add_argument("--json", action="store_true", help="print the full report as JSON (for CI)")
+    sp.add_argument("--min", type=float, default=0, help="exit 1 when the score (0 to 1) is below this (default 0)")
+    sp.add_argument("--concurrency", type=int, default=1, help="requests at once after the first (default 1)")
 
     sp = command(
         "probe", cmd_probe, "call unverified GET endpoints live to capture example responses; exit 1 if all fail"
@@ -521,7 +579,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     command("connections", cmd_connections, "list the connections saved for the mcpsmith server", workdir=False)
     command("guide", cmd_guide, "print the tool-design rules for plan.yaml", workdir=False)
-    command("mcp", cmd_mcp, "run the mcpsmith MCP server on stdio", workdir=False)
+    command("schema", cmd_schema, "print the JSON Schema of plan.yaml (for editor completion)", workdir=False)
+    sp = command("mcp", cmd_mcp, "run the mcpsmith MCP server (stdio, or Streamable HTTP at /mcp)", workdir=False)
+    sp.add_argument("--transport", choices=["stdio", "http"], help="default stdio, or $MCP_TRANSPORT")
+    sp.add_argument("--host", help="HTTP bind address (default 127.0.0.1, or $MCP_HOST); there is no auth")
+    sp.add_argument("--port", type=int, help="HTTP port (default 8000, or $MCP_PORT)")
     return p
 
 
@@ -538,7 +600,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return args.fn(args)
     except EXPECTED as e:
-        print(f"mcpsmith: error: {e}", file=sys.stderr)
+        first = isinstance(e, FileNotFoundError) and WRITTEN_BY.get(Path(e.filename or "").name)
+        print(f"mcpsmith: error: {e}" + (f"; run `{first}` first" if first else ""), file=sys.stderr)
         return 2
 
 

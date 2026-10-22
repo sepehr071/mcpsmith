@@ -4,7 +4,7 @@
 
 # mcpsmith
 
-Turn an OpenAPI file, a website you log in to, or an app you own into a few curated tools for your AI agent. An LLM designs the tools; you get ordinary Python code you own if you want to publish them.
+Turn an OpenAPI file, a Postman collection, a website you log in to, an app you own or a SQL database into a few curated tools for your AI agent. New formats plug in as packages ([docs/extending.md](docs/extending.md)). An LLM designs the tools; you get ordinary Python code you own if you want to publish them.
 
 ```bash
 uvx mcpsmith setup
@@ -15,6 +15,9 @@ uvx mcpsmith setup
 | Source | Command |
 |---|---|
 | OpenAPI / Swagger file or URL | `mcpsmith inspect <file-or-url>` |
+| Postman collection (v2.0/v2.1 export) | `mcpsmith inspect shop.postman_collection.json` |
+| cURL commands (DevTools "Copy as cURL") | `mcpsmith inspect requests.txt` |
+| SQL database (SQLite, PostgreSQL, MySQL, anything SQLAlchemy reads) | `pip install "mcpsmith[sql]"`, then `mcpsmith inspect sqlite:///shop.db` |
 | Website or logged-in dashboard | `mcpsmith browser`, then your agent records it (`mcpsmith capture <url>` records a HAR without the hub) |
 | Android app (APK you own) | `mcpsmith app-android app.apk --base-url https://api.example.com` |
 | Electron / JavaScript app | `mcpsmith app-js <dir\|app.asar\|file> --base-url https://api.example.com` |
@@ -199,6 +202,18 @@ tools:
 
 Argument targets (`to:`): `path.<n>`, `query.<n>`, `header.<n>`, `cookie.<n>`, `body`, `body.<a.b.c>`. Output paths use dots, a number indexes a list (`images.0.url`), `[]` maps over a list (`tags[].name`). `map` turns friendly values the model sees into the cryptic ones the API wants.
 
+A tool can also follow pages, or chain calls (one or the other per tool):
+
+```yaml
+    # in one tool: read up to 3 pages and join the lists at output.root
+    paginate: {style: page, param: query.page, max_pages: 3}   # or offset, cursor, next_url
+    # in another: search, then fetch the details of the first 5 hits
+    steps:
+      - {endpoint: getProduct, for_each: data.products, max_items: 5, args: {path.id: $item.id}}
+```
+
+`body_encoding` (`json`, `form` or `multipart`) says how `body.*` values are sent. A plan carries `schema_version: 1`, unknown keys are errors (a typo like `readonly:` fails instead of being ignored), and `mcpsmith schema` prints the plan's JSON Schema for editor completion and validation.
+
 ### What you get
 
 ```
@@ -211,7 +226,17 @@ Argument targets (`to:`): `path.<n>`, `query.<n>`, `header.<n>`, `cookie.<n>`, `
   skills/<name>/SKILL.md         # skill for the generated server
 ```
 
-`mcpsmith.yaml` is the plan, so you can regenerate. To publish: add a PyPI trusted publisher (workflow `publish.yml`, environment `pypi`), bump the version in `pyproject.toml` and `server.json`, tag `v*`.
+`mcpsmith.yaml` is the plan, so you can regenerate. Each tool in `server.py` keeps its typed signature and calls `mcpsmith.runtime.interpret.run_tool`, the same code the hub runs.
+
+Run a generated server (or the hub, `mcpsmith mcp`) over Streamable HTTP instead of stdio with `--transport http --port 8000` (or `MCP_TRANSPORT=http`); it listens on 127.0.0.1 at `/mcp`. Set `MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on every request (needed before you bind to a non-loopback `--host`). To publish: add a PyPI trusted publisher (workflow `publish.yml`, environment `pypi`), bump the version in `pyproject.toml` and `server.json`, tag `v*`.
+
+### Databases
+
+`mcpsmith inspect postgresql://reader@db.example.com/shop` reads tables, columns, keys and up to 3 sample rows (personal values masked). `draft` writes list and get-by-key tools as plain SQL (`sql:` with `:name` placeholders, args `to: sql.<name>`). A read-only tool must be one `SELECT` (or `WITH ... SELECT`); this is checked by `validate` and again at run time, and SQLite and PostgreSQL also open the connection read-only. The password never goes into the plan: it comes from `<P>_DB_PASSWORD` (or `mcpsmith secret set` in the hub). Install the driver for your database next to `mcpsmith[sql]` (for example `psycopg`).
+
+### Tool-choice evals
+
+`mcpsmith eval --write --provider anthropic` writes `evals.yaml` (one or two user questions per tool, plus a few that no tool should answer). Review the file and commit it. `mcpsmith eval --provider anthropic` then asks the model which tool and arguments answer each question, and reports tool and argument accuracy and which tools get confused. `--json` and `--min 0.9` make it a CI gate. The tool list is the cached prompt prefix, so repeat runs are cheap.
 
 ### Drift check
 
@@ -238,22 +263,27 @@ Most generators mirror every endpoint as a tool and hand the model raw JSON. mcp
 | mcpsmith | OpenAPI, HAR, app code | live hub tools or Python MCP project | LLM-designed plan | per-tool root/fields/max_items | `mcpsmith check` | yes |
 | FastMCP `from_openapi` | OpenAPI | runtime proxy | one tool per endpoint; manual route maps / transforms | raw JSON | no | yes |
 | openapi-mcp-generator | OpenAPI | TypeScript server | one tool per endpoint; `x-mcp` to pick | raw JSON | no | yes |
-| Speakeasy / Gram | OpenAPI | TypeScript or hosted | manual toolsets | experimental | no | Gram yes |
-| Stainless | OpenAPI | npm package | code mode (search + execute) | n/a | no | no |
+| Speakeasy / Gram | OpenAPI | TypeScript or hosted | manual toolsets | experimental | no | yes (AGPL, since Sep 2026) |
+| Cloudflare Forge / Code Mode | OpenAPI | SDK, CLI, MCP server | code mode (search + execute) | n/a | no | yes |
+| AnythingMCP | OpenAPI, Postman, SOAP, GraphQL, SQL, HAR | self-hosted gateway | one tool per operation, visual editor | manual | no | yes (AGPL) |
 | mitmproxy2swagger, har-to-openapi | HAR / traffic | OpenAPI spec | none | none | no | yes |
 | Integuru, reverse-api-engineer | HAR / browsing | API client code, not MCP | none | none | no | yes |
 | Supergood, Wire | site walkthrough | hosted API / MCP | managed | managed | vendor claims | no |
 
-Compiled from each project's public docs in October 2026; check them before relying on a cell. FastMCP's own docs say curated servers clearly beat auto-converted ones.
+Compiled from each project's public docs in October 2026; check them before relying on a cell. Stainless, which generated MCP servers in code mode, joined Anthropic in May 2026 and closed new signups. FastMCP's own docs say curated servers clearly beat auto-converted ones.
+
+## Extending
+
+Add an input format, a value transform or a sign-in provider as your own installed package, without forking: mcpsmith finds them through the entry-point groups `mcpsmith.importers`, `mcpsmith.transforms` and `mcpsmith.signin`. Plugin importers use `mcpsmith.scrub`, the same privacy rules as the built-ins. See [docs/extending.md](docs/extending.md).
 
 ## Limitations
 
 - No browser per call: JS challenges and captchas are out of scope. Sites that need them will fail at `check`.
-- A tool maps to one request. Multi-call workflow tools need hand edits to the generated `server.py`, and regenerating overwrites them.
-- The generated project is Python only.
+- A tool is one request, a paginated request (`paginate`) or a chain of requests (`steps`, with `for_each` fan-out). Logic beyond that (branching, computed values) needs hand edits to the generated `server.py`, and regenerating overwrites them.
+- The generated project is Python only. Servers speak stdio, or Streamable HTTP with `--transport http`; HTTP auth is one shared bearer token (`MCP_AUTH_TOKEN`), not OAuth, so put a gateway in front for per-user access.
 - A HAR only contains what you did while recording; unrecorded features are not in the plan.
 - Endpoints read from app code are unverified until `probe`; a method that cannot be read stays empty.
-- Request bodies are sent as JSON; endpoints that only accept `application/x-www-form-urlencoded` or multipart need a hand edit.
+- Request bodies are JSON, form (`application/x-www-form-urlencoded`) or multipart text fields (`body_encoding` on a tool); file uploads are not supported.
 - The plan is trusted input: its text ends up in server instructions and the skill, and `mcpsmith check` runs the generated code. Review a plan written by an LLM from third-party content before you generate and publish it.
 - Alpha.
 

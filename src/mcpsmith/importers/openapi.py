@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
 
+from mcpsmith.importers.har import cap_notes
 from mcpsmith.model import AuthScheme, Endpoint, Param, Source
 
 METHODS = ("get", "post", "put", "patch", "delete")  # HEAD/OPTIONS/TRACE skipped
@@ -19,25 +20,41 @@ FORMATS = {
     "uuid": "00000000-0000-0000-0000-000000000000",
 }
 MAX_DEPTH = 6
-MAX_REFS = 5000  # ref expansions per _deref call
+MAX_REFS = 500  # ref expansions per path item; every inlined copy counts, shared or not
+MAX_REF_DEPTH = 4  # refs inside refs; deeper ones stay `{"$ref": ...}` (big specs link most schemas to each other)
 
 
 def parse(doc: dict, origin: str | None = None) -> Source:
+    try:
+        return _parse(doc, origin)
+    except (KeyError, TypeError, AttributeError, IndexError) as e:
+        raise ValueError(f"malformed OpenAPI document ({type(e).__name__}: {e})") from e
+
+
+def _parse(doc: dict, origin: str | None) -> Source:
     swagger2 = "swagger" in doc
     info = doc.get("info") or {}
-    schemes = _auth_schemes(doc, swagger2)
+    memo: dict = {}
+    schemes, unsupported = _auth_schemes(doc, swagger2, memo)
     base_url = _swagger2_base(doc, origin) if swagger2 else _server_url((doc.get("servers") or [{}])[0], origin)
     top_security = doc.get("security")
+    notes: list[str] = []
+    if not urlparse(base_url).netloc:
+        notes.append(f"base URL {base_url!r} has no host (a relative server URL); set the real one in the plan.")
+    if unsupported:
+        notes.append("auth schemes not supported, left out: " + ", ".join(f"{n} ({k})" for n, k in unsupported.items()))
+    if external := _external_refs(doc):
+        notes.append("external $refs not read, what they define is missing: " + ", ".join(cap_notes(external, 20)))
 
     endpoints: list[Endpoint] = []
     ids: set[str] = set()
     for path, item in (doc.get("paths") or {}).items():
-        item = _deref(item, doc)
+        item = _deref(item, doc, memo=memo)
         for method in METHODS:
             op = item.get(method)
             if not isinstance(op, dict):
                 continue
-            ep = _endpoint(path, method, item, op, swagger2, origin)
+            ep = _endpoint(path, method, item, op, swagger2, origin, doc.get("consumes") or [])
             if ep.base_url == base_url:
                 ep.base_url = ""
             if ep.id in ids:
@@ -45,25 +62,36 @@ def parse(doc: dict, origin: str | None = None) -> Source:
             ids.add(ep.id)
             security = op.get("security", top_security) or []
             ep.auth = list(dict.fromkeys(name for req in security for name in req if name in schemes))
+            extra = []
+            if lost := sorted({name for req in security for name in req if name in unsupported}):
+                extra.append(f"Note: needs auth mcpsmith does not support: {', '.join(lost)}.")
+            if together := [" + ".join(req) for req in security if len(req) > 1]:
+                extra.append(f"Note: these auth schemes are needed together: {'; '.join(together)}.")
+            ep.description = "\n".join(x for x in (ep.description, *extra) if x)
             endpoints.append(ep)
 
     return Source(
         kind="openapi",
         title=info.get("title") or urlparse(base_url).hostname or "API",
-        description=info.get("description") or "",
+        description="\n\n".join(x for x in (info.get("description") or "", "\n".join(notes)) if x),
         base_url=base_url,
         auth=list(schemes.values()),
         endpoints=endpoints,
     )
 
 
-def _endpoint(path: str, method: str, item: dict, op: dict, swagger2: bool, origin: str | None) -> Endpoint:
-    """`item` and `op` are already dereferenced."""
-    raw = {(p.get("name"), p.get("in")): p for p in item.get("parameters") or []}
-    raw.update({(p.get("name"), p.get("in")): p for p in op.get("parameters") or []})
+def _endpoint(
+    path: str, method: str, item: dict, op: dict, swagger2: bool, origin: str | None, consumes: list[str]
+) -> Endpoint:
+    """`item` and `op` are already dereferenced; `consumes` is the Swagger 2 document default."""
+    plist = [*(item.get("parameters") or []), *(op.get("parameters") or [])]
+    raw = {(p.get("name"), p.get("in")): p for p in plist}
+    notes = [f"parameter $ref {p['$ref']} not read, left out" for p in plist if "$ref" in p]
 
     params: list[Param] = []
     body_schema = body_example = None
+    encoding = "json"
+    files: list[str] = []
     form: dict[str, Any] = {}
     for p in raw.values():
         where = p.get("in")
@@ -74,6 +102,10 @@ def _endpoint(path: str, method: str, item: dict, op: dict, swagger2: bool, orig
         elif where in ("path", "query", "header", "cookie"):
             params.append(_param(p))
     if form:
+        files = [name for name, p in form.items() if _is_file(p)]
+        multipart = files or "multipart/form-data" in (op.get("consumes") or consumes)
+        encoding = "multipart" if multipart else "form"
+        form = {name: p for name, p in form.items() if name not in files}
         body_schema = {
             "type": "object",
             "properties": {
@@ -83,9 +115,25 @@ def _endpoint(path: str, method: str, item: dict, op: dict, swagger2: bool, orig
         }
 
     if not swagger2 and op.get("requestBody"):
-        media = _media(op["requestBody"].get("content"))
+        content = op["requestBody"].get("content") or {}
+        key = _media_key(content)
+        media = content.get(key) or {}
         body_schema = media.get("schema")
         body_example = _media_example(media)
+        if "x-www-form-urlencoded" in key:
+            encoding = "form"
+        elif key.startswith("multipart/"):
+            encoding = "multipart"
+        props = body_schema.get("properties") if isinstance(body_schema, dict) else None
+        if encoding != "json" and isinstance(props, dict):
+            if files := [name for name, s in props.items() if _is_file(s)]:
+                body_schema = {**body_schema, "properties": {k: v for k, v in props.items() if k not in files}}
+                if "required" in body_schema:
+                    body_schema["required"] = [r for r in body_schema["required"] if r not in files]
+                if isinstance(body_example, dict):
+                    body_example = {k: v for k, v in body_example.items() if k not in files}
+    if files:
+        notes.append(f"file parts left out (uploads are not supported): {', '.join(files)}")
     if body_schema is not None and body_example is None:
         body_example = example(body_schema)
 
@@ -98,14 +146,42 @@ def _endpoint(path: str, method: str, item: dict, op: dict, swagger2: bool, orig
         path=path,
         base_url=_server_url(servers[0], origin) if servers else "",
         summary=op.get("summary") or "",
-        description=op.get("description") or "",
+        description="\n".join(x for x in (op.get("description") or "", *(f"Note: {n}." for n in notes)) if x),
         tags=op.get("tags") or [],
         params=params,
         body_schema=body_schema,
         body_example=body_example,
+        body_encoding=encoding,
         response_schema=response_schema,
         response_example=response_example,
     )
+
+
+def _is_file(schema: Any) -> bool:
+    """A file upload: Swagger 2 `type: file`, OpenAPI `format: binary`, a 3.1 `contentMediaType`, or a list of them."""
+    if not isinstance(schema, dict):
+        return False
+    return (
+        schema.get("type") == "file"
+        or schema.get("format") == "binary"
+        or "contentMediaType" in schema
+        or _is_file(schema.get("items"))
+    )
+
+
+def _external_refs(doc: dict) -> list[str]:
+    """`$ref`s to other files or URLs, which are not read (iterative: a deep document must not hit the stack)."""
+    out: set[str] = set()
+    stack: list[Any] = [doc]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            if isinstance(ref := node.get("$ref"), str) and not ref.startswith("#"):
+                out.add(ref)
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+    return sorted(out)
 
 
 def _param(p: dict) -> Param:
@@ -128,7 +204,10 @@ def _param(p: dict) -> Param:
 
 def _response(op: dict, swagger2: bool) -> tuple[dict | None, Any]:
     responses = op.get("responses") or {}
-    resp = next((r for code, r in responses.items() if str(code).startswith("2")), responses.get("default"))
+    ok = [(str(code), r) for code, r in responses.items() if str(code).startswith("2") and isinstance(r, dict)]
+    # a 204 listed before the 200 must not hide the 200's schema
+    ok.sort(key=lambda cr: (not cr[1].get("schema" if swagger2 else "content"), cr[0] not in ("200", "201")))
+    resp = ok[0][1] if ok else responses.get("default")
     if not resp:
         return None, None
     if swagger2:
@@ -147,8 +226,11 @@ def _response(op: dict, swagger2: bool) -> tuple[dict | None, Any]:
 def _media(content: dict | None) -> dict:
     """The JSON media type of a content map; else the first one (the contract has no content type)."""
     content = content or {}
-    key = next((k for k in content if "json" in k), next(iter(content), None))
-    return content.get(key) or {}
+    return content.get(_media_key(content)) or {}
+
+
+def _media_key(content: dict) -> str:
+    return next((k for k in content if "json" in k), next(iter(content), ""))
 
 
 def _media_example(media: dict) -> Any:
@@ -212,25 +294,40 @@ def example(schema: Any, depth: int = 0) -> Any:
     return FORMATS.get(schema.get("format"), "string")
 
 
-def _deref(node: Any, root: dict, seen: tuple[str, ...] = (), budget: list[int] | None = None) -> Any:
-    """Resolve local `#/...` refs recursively; a ref inside itself, or past MAX_REFS expansions, stays as `{"$ref": ...}`."""
+def _deref(
+    node: Any, root: dict, seen: tuple[str, ...] = (), budget: list[int] | None = None, memo: dict | None = None
+) -> Any:
+    """Resolve local `#/...` refs recursively. A ref inside itself, MAX_REF_DEPTH refs deep, or past MAX_REFS
+    expansions stays as `{"$ref": ...}`. `memo` shares results across calls (one per document): the same component
+    is resolved once, and every path item that uses it gets the same object."""
     if budget is None:
         budget = [MAX_REFS]  # refs that each point at the next one twice would otherwise expand to 2^depth nodes
+    if memo is None:
+        memo = {}
     if isinstance(node, list):
-        return [_deref(v, root, seen, budget) for v in node]
+        return [_deref(v, root, seen, budget, memo) for v in node]
     if not isinstance(node, dict):
         return node
     ref = node.get("$ref")
     if isinstance(ref, str) and ref.startswith("#/"):
-        if ref in seen or budget[0] <= 0:
+        if ref in seen or len(seen) >= MAX_REF_DEPTH or budget[0] <= 0:
             return {"$ref": ref}
         target = _pointer(root, ref)
         if not isinstance(target, dict):
             return {"$ref": ref}
-        budget[0] -= 1
         siblings = {k: v for k, v in node.items() if k != "$ref"}  # 3.1 allows description etc. next to $ref
-        return _deref({**target, **siblings}, root, (*seen, ref), budget)
-    return {k: _deref(v, root, seen, budget) for k, v in node.items()}
+        key = (ref, seen)
+        if not siblings and key in memo and memo[key][1] <= budget[0]:
+            out, cost = memo[key]
+            budget[0] -= cost
+            return out
+        before = budget[0]
+        budget[0] -= 1
+        out = _deref({**target, **siblings}, root, (*seen, ref), budget, memo)
+        if not siblings and budget[0] > 0:  # a result cut short by the budget is not reused
+            memo[key] = (out, before - budget[0])
+        return out
+    return {k: _deref(v, root, seen, budget, memo) for k, v in node.items()}
 
 
 def _pointer(root: dict, ref: str) -> Any:
@@ -264,11 +361,13 @@ def _swagger2_base(doc: dict, origin: str | None) -> str:
     return f"{scheme}://{host}{base}" if host else base
 
 
-def _auth_schemes(doc: dict, swagger2: bool) -> dict[str, AuthScheme]:
+def _auth_schemes(doc: dict, swagger2: bool, memo: dict) -> tuple[dict[str, AuthScheme], dict[str, str]]:
+    """(supported schemes, {name: kind} of the ones mcpsmith cannot send, e.g. mutualTLS or http digest)."""
     defs = doc.get("securityDefinitions") if swagger2 else (doc.get("components") or {}).get("securitySchemes")
     out: dict[str, AuthScheme] = {}
+    unsupported: dict[str, str] = {}
     for name, s in (defs or {}).items():
-        s = _deref(s, doc)
+        s = _deref(s, doc, memo=memo)
         kind = s.get("type")
         if kind == "apiKey" and s.get("in") in ("header", "query", "cookie"):
             out[name] = AuthScheme(name=name, type=s["in"], param=s.get("name", ""))
@@ -276,4 +375,6 @@ def _auth_schemes(doc: dict, swagger2: bool) -> dict[str, AuthScheme]:
             out[name] = AuthScheme(name=name, type="basic")
         elif kind in ("oauth2", "openIdConnect") or (kind == "http" and str(s.get("scheme", "")).lower() == "bearer"):
             out[name] = AuthScheme(name=name, type="bearer")
-    return out
+        else:
+            unsupported[name] = " ".join(str(x) for x in (kind, s.get("scheme") or s.get("in")) if x) or "unknown"
+    return out, unsupported

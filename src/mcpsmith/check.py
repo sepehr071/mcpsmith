@@ -25,13 +25,14 @@ class CheckResult:
     chars: int
     empty_fields: list[str] = field(default_factory=list)
     skipped: bool = False
+    reason: str = ""  # why it was skipped
 
 
 def run(project: Path, writes: bool = False) -> list[CheckResult]:
     """Load `<project>/mcpsmith.yaml`, import `<package>.server` from `<project>/src` and call each tool once.
 
     Tools with read_only false (or a DELETE/PUT/PATCH endpoint written as 'METHOD /path') are skipped unless `writes`:
-    they would change data on the live API.
+    they would change data on the live API. Tools whose required args have no example are skipped too.
     """
     project = Path(project)
     for name in ("httpx", "mcp"):  # the report already says what failed; per-request log lines are noise
@@ -62,7 +63,12 @@ async def _check(plan: Plan, server: ModuleType, writes: bool) -> list[CheckResu
     async with Client(server.mcp) as client:
         for t in plan.tools:
             if (not t.read_only or endpoint_method(t.endpoint) in WRITE_METHODS) and not writes:
-                results.append(CheckResult(t.name, True, None, 0, skipped=True))
+                reason = "changes data on the live API; add --writes to call it"
+                results.append(CheckResult(t.name, True, None, 0, skipped=True, reason=reason))
+                continue
+            if missing := [a.name for a in t.args if a.required and a.name not in t.example]:
+                reason = f"add example values for {missing} to mcpsmith.yaml and regenerate"  # as the generated tests
+                results.append(CheckResult(t.name, True, None, 0, skipped=True, reason=reason))
                 continue
             try:
                 result = await client.call_tool(t.name, t.example)

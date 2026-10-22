@@ -64,6 +64,18 @@ mcpsmith check <project> --json
 - Any `error`: fix the example, auth or mapping before polishing wording.
 - Non-GET tools hit the real service; get the user's confirmation before running `check` on them.
 
+Tool choice (needs an LLM API key, e.g. `ANTHROPIC_API_KEY`):
+
+```
+mcpsmith eval -w .mcpsmith --write --provider anthropic
+mcpsmith eval -w .mcpsmith
+```
+
+`--write` asks the LLM for one or two natural questions per tool (expected args from its `example`) plus a few questions no tool fits, saved as `evals.yaml` (never overwritten without `--force`). Review and edit it, then commit it. A plain run sends each question with the tool list exactly as the server exposes it and scores the pick: `score` (cases with right tool and args), tool and arg accuracy, and per tool which tool was picked instead. Pass a generated project instead of `-w` to evaluate it; `--json` and `--min 0.9` for CI.
+- A tool often picked instead of another: sharpen both first lines and say when to use which.
+- Right tool, wrong args: improve the arg descriptions (unit, format, one example), add `enum` or `map`.
+- A negative answered with a tool: say in the description what the tool does not cover.
+
 Loop: edit `plan.yaml`, `mcpsmith validate`, `mcpsmith generate -o <project> --force`, `cd <project> && uv run pytest`, `mcpsmith check <project>`. Regenerating overwrites hand edits to `server.py`.
 
 ## Reviewing a server not made with mcpsmith

@@ -137,22 +137,26 @@ class Api:
         body: Any = None,
         headers: dict[str, Any] | None = None,
         cookies: dict[str, Any] | None = None,
+        encoding: str = "json",
     ) -> Any:
         """Send one request and return the parsed JSON body (`{"text": ...}` when it is not JSON).
 
         `url` is a path template relative to base_url ("/pet/{petId}", filled from `path`) or an absolute URL on
         an allowed host. None values are dropped; dotted `body` keys nest ({"a.b": 1} -> {"a": {"b": 1}}).
+        `encoding` sends the body as "json", "form" (urlencoded) or "multipart" (text fields).
         Retried up to RETRIES times on timeout, network error, 5xx or 429, with jittered exponential backoff or
         after Retry-After when sent. 403 is never retried.
         """
         method = method.upper()
-        query, headers, cookies = _present(query), _present(headers), _present(cookies)
+        query = _flat("query", _present(query), lists=True)
+        headers = {k: _text(v) for k, v in _flat("header", _present(headers)).items()}
+        cookies = {k: _text(v) for k, v in _flat("cookie", _present(cookies)).items()}
         url = self._url(url, _present(path))
         host = httpx.URL(url).host
         if host not in self.hosts:
             raise ApiError(f"Refusing to call unexpected host {host}.")
         sent, session, signer = False, None, None
-        if host == httpx.URL(self.base_url).host:  # other allowlisted hosts never see the credential
+        if _origin(url) == _origin(self.base_url):  # other hosts, ports and schemes never see the credential
             sent = self._add_auth(query, headers, cookies)
             if self.auth and self.auth["type"] == "browser" and self.cookie_provider:
                 try:
@@ -179,6 +183,15 @@ class Api:
             headers["Cookie"] = "; ".join(f"{k}={v}" for k, v in cookies.items())
         payload = None if method == "GET" else _nest(body) if isinstance(body, dict) else body
         form, sign_key = signer.encrypt(url, session, payload) if session else (None, None)
+        if form:
+            send: dict[str, Any] = {"data": form}
+        elif encoding == "form":
+            send = {"data": _fields(payload)}
+        elif encoding == "multipart":
+            # shortcut: text fields only, no file upload; add (filename, bytes) parts when a plan needs one.
+            send = {"files": [(k, (None, v)) for k, vs in _fields(payload).items() for v in vs]}
+        else:
+            send = {"json": payload}
 
         shown = {k: hashlib.sha256(v.encode()).hexdigest() if k == "Cookie" else v for k, v in headers.items()}
         key = (url, json.dumps([query, shown], sort_keys=True, default=str))
@@ -191,7 +204,7 @@ class Api:
             last = attempt == self.RETRIES
             wait = self.RETRY_DELAY * 2**attempt * random.uniform(1, 1.5)
             try:
-                r, content = await self._request(method, url, query, headers, payload, host, form)
+                r, content = await self._request(method, url, query, headers, send, host)
             except ApiError as e:
                 if last or e.status is not None or not safe:
                     raise
@@ -208,6 +221,8 @@ class Api:
             raise ApiError(f"The {host} sign-in has expired. {signin.LOGIN_HINT}", 401, expired=True)
         if r.status_code >= 300:
             raise ApiError(self._status_message(r, content, host, sent), r.status_code)
+        if method != "GET":
+            self._cache.clear()  # a write may change what any cached GET would return
         if not content:
             return {"status": r.status_code}
         if sign_key:
@@ -238,10 +253,9 @@ class Api:
 
     def _url(self, url: str, path: dict[str, Any]) -> str:
         def fill(m: re.Match) -> str:
-            if m.group(1) not in path:
+            if m.group(1) not in path or str(path[m.group(1)]) == "":  # "" would turn /items/{id} into /items/
                 raise ApiError(f"Missing value for path parameter '{m.group(1)}'.")
-            v = path[m.group(1)]
-            v = quote(str(v).lower() if isinstance(v, bool) else str(v), safe="")
+            v = quote(_text(path[m.group(1)]), safe="")
             return v.replace(".", "%2E") if v in (".", "..") else v  # httpx would resolve "." and ".." segments
 
         url = re.sub(r"\{([^{}]+)\}", fill, url)
@@ -326,9 +340,8 @@ class Api:
             verify=tls_context(), proxy=proxy, limits=httpx.Limits(max_connections=2 * self.concurrency)
         )
 
-    async def _request(self, method, url, query, headers, payload, host, form=None) -> tuple[httpx.Response, bytes]:
+    async def _request(self, method, url, query, headers, body, host) -> tuple[httpx.Response, bytes]:
         client, limit = self._get_client()
-        body = {"data": form} if form else {"json": payload}
         try:
             async with limit:
                 if self.impersonate:
@@ -375,7 +388,9 @@ class Api:
         if code >= 500:
             return f"{host} had a server error (HTTP {code}). Try again later."
         if code < 400:
-            return f"{host} redirected the request (HTTP {code}) to {r.headers.get('location', '?')}; not followed."
+            loc = httpx.URL(r.headers.get("location", "?"))  # query and userinfo may carry codes or tokens
+            to = f"{loc.scheme}://{loc.host}{loc.path}" if loc.host else loc.path
+            return f"{host} redirected the request (HTTP {code}) to {to}; not followed."
         try:
             detail = _error_text(json.loads(content))
         except ValueError:
@@ -393,21 +408,61 @@ def _present(d: dict[str, Any] | None) -> dict[str, Any]:
     return {k: int(v) if isinstance(v, float) and v.is_integer() else v for k, v in (d or {}).items() if v is not None}
 
 
+def _text(v: Any) -> str:
+    """A scalar as sent on the wire: booleans lowercase, like JSON and httpx query params."""
+    return str(v).lower() if isinstance(v, bool) else str(v)
+
+
+def _flat(kind: str, d: dict[str, Any], lists: bool = False) -> dict[str, Any]:
+    """Refuse values that have no text form here (an object; a list too, except repeated query keys)."""
+    for k, v in d.items():
+        items = v if lists and isinstance(v, list) else [v]
+        if any(isinstance(x, dict | list) for x in items):
+            raise ApiError(f"The {kind} value '{k}' must be text or a number, not {type(v).__name__}.")
+    return d
+
+
+def _fields(payload: Any) -> dict[str, list[str]]:
+    """Form or multipart fields from a body object: text values, a list repeats the key."""
+    if payload is None:
+        return {}
+    if not isinstance(payload, dict):
+        raise ApiError(f"A form body must be an object of fields, not {type(payload).__name__}.")
+    return {
+        k: [_text(x) for x in v] if isinstance(v, list) else [_text(v)] for k, v in _flat("form", payload, True).items()
+    }
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    u = httpx.URL(url)
+    return u.scheme, u.host, u.port or {"http": 80, "https": 443}.get(u.scheme)
+
+
 def _nest(body: dict[str, Any]) -> dict[str, Any]:
     """{"a.b": 1, "c": 2} -> {"a": {"b": 1}, "c": 2}; {"p.0": 1, "p.1": 2} -> {"p": [1, 2]}; None values dropped."""
     out: dict[str, Any] = {}
     made: set[int] = set()  # nodes built from dotted keys; only these may become lists
+    by: dict[str, str] = {}  # dotted path -> the body key that set it, to name both sides of a clash
     for key, value in body.items():
         if value is None:
             continue
         *parents, leaf = key.split(".")
         node = out
-        for p in parents:
+        for i, p in enumerate(parents):
+            at = ".".join(parents[: i + 1])
             if p not in node:
                 node[p] = {}
                 made.add(id(node[p]))
+                by.setdefault(at, key)
+            elif not isinstance(node[p], dict):
+                raise ApiError(
+                    f"Body fields '{by.get(at, at)}' and '{key}' clash: '{at}' cannot be a value and an object."
+                )
             node = node[p]
+        if leaf in node and id(node[leaf]) in made:
+            raise ApiError(f"Body fields '{by[key]}' and '{key}' clash: '{key}' cannot be a value and an object.")
         node[leaf] = copy.deepcopy(value)
+        by.setdefault(key, key)
     return _listify(out, made)
 
 

@@ -135,9 +135,21 @@ def test_layout_and_refuses_non_empty(project):
         assert (project / rel).is_file(), rel
     assert not (project / "tests/fixtures/demo_create.json").exists()  # no response example
     assert load_plan(project / "mcpsmith.yaml") == PLAN
-    with pytest.raises(FileExistsError):
+    with pytest.raises(FileExistsError, match="--force"):
         generate(PLAN, project, SOURCE)
     assert generate(PLAN, project, SOURCE, force=True)
+
+
+def test_force_removes_stale_generated_files(tmp_path):
+    out = tmp_path / "demo-mcp"
+    generate(PLAN, out, SOURCE)
+    (out / "skills/old").mkdir()
+    (out / "src/demo_mcp/stale.py").write_text("", encoding="utf-8")
+    (out / "notes.md").write_text("mine", encoding="utf-8")
+    generate(PLAN.model_copy(update={"tools": PLAN.tools[1:]}), out, SOURCE, force=True)
+    assert not (out / "tests/fixtures/demo_item.json").exists() and (out / "tests/fixtures/demo_search.json").exists()
+    assert not (out / "skills/old").exists() and not (out / "src/demo_mcp/stale.py").exists()
+    assert (out / "notes.md").read_text(encoding="utf-8") == "mine"  # not a generated path: kept
 
 
 def test_metadata_files(project):
@@ -170,8 +182,10 @@ def test_server_code(project):
     assert tools["demo_item"][0] == 'One "item"'
     assert tools["demo_item"][1] == PLAN.tools[0].description
     assert list(tools) == ["demo_item", "demo_search", "demo_create"]
-    assert '"filters.minPrice": min_price' in code
+    assert '"to": "query.filters.minPrice"' in code and '"min_price": min_price' in code
     assert '"https://write.demo.test/v2/items"' in code and '"write.demo.test"' in code
+    # the body only hands values to the runtime; the spec literal is data
+    assert 'return await _run(api, _TOOLS["demo_item"], {"item_id": item_id}, _TZ)' in code
 
 
 @pytest.mark.skipif(not shutil.which("ruff"), reason="ruff not installed")
@@ -192,7 +206,9 @@ def test_generated_tests_pass(project):
         text=True,
     )
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "2 passed, 3 deselected" in r.stdout
+    assert "2 passed, 2 deselected" in r.stdout
+    tests = (project / "tests/test_tools.py").read_text(encoding="utf-8")
+    assert "test_demo_item_live" in tests and "test_demo_create_live" not in tests  # live tests never write
 
 
 def test_transforms_in_generated_code(tmp_path):
@@ -215,7 +231,7 @@ def test_transforms_in_generated_code(tmp_path):
     out = tmp_path / "demo-mcp"
     generate(plan, out, source)
     code = (out / "src/demo_mcp/server.py").read_text(encoding="utf-8")
-    assert 'TZ = "Asia/Tehran"' in code and 'transform_in("jalali->unix", since, TZ)' in code
+    assert '_TZ = "Asia/Tehran"' in code and '"transform": "jalali->unix"' in code
     (out / "tests/test_transformed.py").write_text(
         "import json\n\nimport pytest\n\npytestmark = pytest.mark.anyio\n\n\n"
         "async def test_output(client, replay):\n    replay('demo_day')\n"
@@ -238,7 +254,8 @@ def test_transforms_in_generated_code(tmp_path):
 def test_endpoint_without_source(tmp_path):
     plan = PLAN.model_copy(update={"tools": [PLAN.tools[2].model_copy(update={"endpoint": "post /things"})]})
     generate(plan, tmp_path / "a")
-    assert '"POST", "/things"' in (tmp_path / "a/src/demo_mcp/server.py").read_text(encoding="utf-8")
+    code = (tmp_path / "a/src/demo_mcp/server.py").read_text(encoding="utf-8")
+    assert '"method": "POST"' in code and '"url": "/things"' in code
     with pytest.raises(ValueError, match="METHOD /path"):
         generate(PLAN, tmp_path / "b")
 
@@ -372,7 +389,11 @@ def test_templates(project):
 
 def test_generated_dependency_floor(tmp_path):
     generate(PLAN, tmp_path / "a", SOURCE)
-    assert '"mcpsmith>=0.2"' in (tmp_path / "a/pyproject.toml").read_text(encoding="utf-8")
+    assert '"mcpsmith>=0.6,<1"' in (tmp_path / "a/pyproject.toml").read_text(encoding="utf-8")  # run_tool is new in 0.6
+    tools = [PLAN.tools[0], PLAN.tools[2].model_copy(update={"body_encoding": "multipart"})]
+    generate(PLAN.model_copy(update={"tools": tools, "impersonate": True}), tmp_path / "b", SOURCE)
+    assert '"mcpsmith[stealth]>=0.6,<1"' in (tmp_path / "b/pyproject.toml").read_text(encoding="utf-8")
+    assert '"body_encoding": "multipart"' in (tmp_path / "b/src/demo_mcp/server.py").read_text(encoding="utf-8")
 
 
 def test_signin_project_has_login_and_replays_encrypted(tmp_path):
@@ -394,6 +415,7 @@ def test_signin_project_has_login_and_replays_encrypted(tmp_path):
         args=[_arg(name="did", description="Bulb id, e.g. '7'.", required=True, to="path.did")],
         fixed={"body.method": "get_prop", "body.params": ["power", "bright"]},
         output=Output(fields={"power": "result.0", "brightness": "result.1"}),
+        read_only=True,
         example={"did": "7"},
     )
     auth = AuthScheme(name="mi", type="signin", provider="xiaomi", env="DEMO_MCP_SESSION")
@@ -402,7 +424,7 @@ def test_signin_project_has_login_and_replays_encrypted(tmp_path):
     code = (out / "src/demo_mcp/server.py").read_text(encoding="utf-8")
     assert 'secret=signin.keychain("demo-mcp")' in code and '"provider": "xiaomi"' in code
     assert "async def demo_login(" in code and 'signin.login("demo-mcp", "DEMO_MCP_SESSION", api, again)' in code
-    assert '"mcpsmith>=0.5"' in (out / "pyproject.toml").read_text(encoding="utf-8")
+    assert '"mcpsmith>=0.6,<1"' in (out / "pyproject.toml").read_text(encoding="utf-8")
     assert "DEMO_MCP_SESSION=" not in (out / "README.md").read_text(encoding="utf-8")
     env = {k: v for k, v in os.environ.items() if not k.startswith("DEMO_MCP")} | {"PYTHONPATH": str(out / "src")}
     r = subprocess.run(

@@ -101,7 +101,8 @@ def test_secrets_and_userinfo_are_gone(src):
     assert e.base_url == "https://api.demo.test" and e.method == "GET"
     me = next(e for e in src.endpoints if e.path == "/user")
     assert [a.param for a in src.auth] == ["Authorization"] and me.auth == ["authorization"]
-    assert [(p.name, p.example) for p in me.params if p.location == "header"] == [("X-Client", "demo")]
+    # a literal from app code is kept only under a harmless name (Accept, page, ...): X-Client could hold a key
+    assert [(p.name, p.example) for p in me.params if p.location == "header"] == [("X-Client", None)]
 
 
 def test_same_call_in_two_files_gets_two_ids(src):
@@ -232,6 +233,17 @@ def test_fetch_with_a_non_literal_method_is_unreadable():
     )
     assert {(e.path, e.method) for e in s.endpoints} == {("/k", ""), ("/ok", "GET")}
     assert "{u}" not in {e.path for e in s.endpoints}
+
+
+def test_only_harmless_literals_are_kept():
+    code = """fetch('/a?appkey=K123&clientsecret=S9&tenant=T7&page=2', {
+  headers: { 'X-App-Token2': 'TT55', 'X-Tenant': 'acme77', Accept: 'application/json' } })"""
+    e = electron.parse_sources({"a.js": code}).endpoints[0]
+    got = {p.name: p.example for p in e.params}
+    assert got.get("page") == "2" and got.get("Accept") == "application/json"
+    assert got.get("tenant", None) is None and got.get("X-Tenant", None) is None
+    dump = e.model_dump_json()
+    assert not any(s in dump for s in ("K123", "S9", "T7", "TT55", "acme77"))
 
 
 def test_quoted_method_key_is_read_not_guessed():

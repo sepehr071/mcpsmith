@@ -11,6 +11,7 @@ from __PACKAGE__.server import api, mcp
 FIXTURES = Path(__file__).parent / "fixtures"
 AUTH_ENV = __AUTH_ENV__
 SIGNIN = __SIGNIN__  # sign-in provider, or None
+SQL = __SQL__  # a database server: replay answers each query, not HTTP
 
 
 @pytest.fixture
@@ -21,6 +22,9 @@ def anyio_backend():
 @pytest.fixture(autouse=True)
 def fresh_http_client(monkeypatch):
     """The HTTP client is bound to one event loop; each test gets a new loop."""
+    if SQL:
+        yield
+        return
     monkeypatch.setattr(api, "RETRY_DELAY", 0)
     monkeypatch.setattr(api, "JITTER", (0, 0))
     api.set_transport(None)
@@ -34,6 +38,9 @@ def replay(monkeypatch):
 
     def use(name: str) -> None:
         body = json.loads((FIXTURES / f"{name}.json").read_text(encoding="utf-8"))
+        if SQL:  # the saved rows; the read-only check still runs before
+            monkeypatch.setattr(api, "fetch", lambda sql, params, read_only, max_rows: body[:max_rows])
+            return
         if SIGNIN:  # the provider signs each request and may encrypt the answer
             from mcpsmith.runtime import signin
 

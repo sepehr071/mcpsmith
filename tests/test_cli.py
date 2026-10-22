@@ -1,9 +1,12 @@
+import asyncio
 import json
+import os
 
+import httpx
 import pytest
 from mcp import Client
 
-from mcpsmith import server
+from mcpsmith import __version__, server
 from mcpsmith.cli import main
 from mcpsmith.model import load_plan, save_plan
 
@@ -102,6 +105,55 @@ def test_guide(capsys):
     assert capsys.readouterr().out.strip()
 
 
+def test_schema_and_version(capsys):
+    assert main(["schema"]) == 0
+    assert "schema_version" in json.loads(capsys.readouterr().out)["properties"]
+    with pytest.raises(SystemExit) as e:
+        main(["--version"])
+    assert e.value.code == 0 and capsys.readouterr().out.strip() == f"mcpsmith {__version__}"
+
+
+def test_missing_file_names_the_command_to_run(tmp_path, capsys):
+    wd = str(tmp_path / "wd")
+    assert main(["draft", "-w", wd]) == 2
+    assert "run `mcpsmith inspect` first" in capsys.readouterr().err
+    assert main(["validate", "-w", wd]) == 2
+    assert "run `mcpsmith draft` first" in capsys.readouterr().err
+
+
+def test_check_skips_tools_without_examples(spec, tmp_path, monkeypatch, capsys):
+    wd, out = str(tmp_path / "wd"), tmp_path / "out"
+    main(["inspect", str(spec), "-w", wd])
+    main(["draft", "-w", wd, "--name", "pets-mcp"])
+    plan = load_plan(tmp_path / "wd" / "plan.yaml")
+    get = next(t for t in plan.tools if t.endpoint == "getPet")
+    get.example = {}
+    save_plan(plan, tmp_path / "wd" / "plan.yaml")
+    assert main(["generate", "-w", wd, "-o", str(out)]) == 0
+    seen = []
+    handler = lambda r: seen.append(r) or httpx.Response(200, json=[{"id": 1}])  # noqa: E731
+    monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda **kw: httpx.MockTransport(handler))
+    capsys.readouterr()
+    assert main(["check", str(out)]) == 0
+    printed = capsys.readouterr().out
+    assert f"SKIP {get.name}  add example values for ['pet_id'] to mcpsmith.yaml and regenerate" in printed
+    assert seen and not any(r.url.path.startswith("/api/pets/") for r in seen)
+
+
+def test_app_desktop_tool_needs_force_to_overwrite(tmp_path):
+    har = tmp_path / "capture.har"
+    entry = {
+        "request": {"method": "GET", "url": "https://api.demo.test/items", "headers": [], "queryString": []},
+        "response": {"status": 200, "headers": [], "content": {"mimeType": "application/json", "text": "[1]"}},
+    }
+    har.write_text(json.dumps({"log": {"entries": [entry]}}), encoding="utf-8")
+    wd = str(tmp_path / "wd")
+    asyncio.run(server.smith_app_desktop(str(har), None, wd))
+    with pytest.raises(ValueError, match="already exists"):
+        asyncio.run(server.smith_app_desktop(str(har), None, wd))
+    assert asyncio.run(server.smith_app_desktop(str(har), None, wd, force=True))["endpoints"] == 1
+
+
 def test_help(capsys):
     with pytest.raises(SystemExit) as e:
         main(["--help"])
@@ -181,7 +233,10 @@ async def test_smith_install_registers_generated_project(client, spec, tmp_path,
     await call(client, "smith_inspect", {"source": str(spec), "workdir": wd})
     await call(client, "smith_draft", {"workdir": wd, "name": "pets-mcp"})
     await call(client, "smith_generate", {"workdir": wd, "out": str(out)})
-    r = await call(client, "smith_install", {"project": str(out), "agents": ["claude"]})
+    r = await call(client, "smith_install", {"project": str(out), "agents": ["claude"]})  # dry run by default
+    assert "dry_run=false" in r["next"] and any("pets-mcp" in line for line in r["plan"])
+    assert not (home / ".claude.json").exists()
+    r = await call(client, "smith_install", {"project": str(out), "agents": ["claude"], "dry_run": False})
     assert not r["conflicts"]
     entry = json.loads((home / ".claude.json").read_text(encoding="utf-8"))["mcpServers"]["pets-mcp"]
     assert entry["command"] == "uv" and entry["args"] == ["run", "--directory", str(out.resolve()), "pets-mcp"]
@@ -216,3 +271,17 @@ def test_setup_and_install_parse():
         True,
         True,
     )
+
+
+def test_mcp_transport_flags_reach_the_runtime(monkeypatch):
+    for k in ("MCP_TRANSPORT", "MCP_HOST", "MCP_PORT"):
+        monkeypatch.setenv(k, "")  # records the original, so what cmd_mcp sets is undone after the test
+        monkeypatch.delenv(k)
+    seen = {}
+    monkeypatch.setattr(
+        server, "main", lambda: seen.update({k: os.environ.get(k) for k in ("MCP_TRANSPORT", "MCP_PORT")})
+    )
+    assert main(["mcp", "--transport", "http", "--port", "9001"]) == 0
+    assert seen == {"MCP_TRANSPORT": "http", "MCP_PORT": "9001"}
+    with pytest.raises(SystemExit):
+        main(["mcp", "--transport", "sse"])

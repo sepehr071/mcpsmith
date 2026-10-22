@@ -285,6 +285,10 @@ def _endpoint(
             continue  # not an HTTP parameter (e.g. a Kotlin Continuation)
         var, jtype = tokens[-1], " ".join(tokens[:-1])
         an, braw = ans[0]
+        if an in ("Field", "FieldMap"):  # Retrofit sends these only as a form, @Part only as multipart
+            encoding = encoding or "form-encoded body"
+        elif an in ("Part", "PartMap"):
+            encoding = encoding or "multipart body"
         first = _args(braw)[:1]
         label = _literal(first[0][1]) if first and first[0][0] in (None, "value") else None
         p = _param(an, label, var, jtype, placeholders, unresolved)
@@ -311,6 +315,7 @@ def _endpoint(
         summary=name,
         description="; ".join(x for x in (encoding, note) if x),
         params=plist,
+        body_encoding={"form-encoded body": "form", "multipart body": "multipart"}.get(encoding, "json"),
         auth=list(dict.fromkeys(auth)),
         count=0,
         verified=False,

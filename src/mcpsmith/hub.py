@@ -13,6 +13,7 @@ from typing import Any
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from pydantic import ValidationError
 
 from . import browser, secrets
 from .cli import EXPECTED, load_workdir_source, split_issues
@@ -115,7 +116,11 @@ class Hub:
             try:
                 source = load_source(d / "source.json") if (d / "source.json").exists() else None
                 meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
-                self._register(d.name, load_plan(d / "plan.yaml"), source, meta.get("proxy"))
+                plan = load_plan(d / "plan.yaml")
+                # the saved plan may have been edited since connect: hold it to the same rules
+                if errors := split_issues(validate(plan, source))[0]:
+                    raise ValueError("plan has errors: " + "; ".join(errors))
+                self._register(d.name, plan, source, meta.get("proxy"))
             except (*EXPECTED, KeyError, TypeError) as e:
                 self._conns[d.name] = Connection(warning=f"{type(e).__name__}: {e}")
                 warnings.append(f"connection {d.name} not loaded: {e}")
@@ -138,9 +143,10 @@ class Hub:
             raise ToolError(f"unknown connection {name!r}; see smith_connections")
         return c
 
-    def tools(self, name: str) -> list[dict]:
+    def tools(self, name: str) -> dict:
+        """The plan's server instructions (what an exported server announces) and its tools."""
         c = self._conn(name)
-        return [
+        tools = [
             {
                 "name": t.name,
                 "description": t.description,
@@ -149,6 +155,7 @@ class Hub:
             }
             for t in c.plan.tools
         ]
+        return {"instructions": c.plan.instructions, "tools": tools}
 
     async def login(self, name: str, again: bool = False) -> dict:
         """How the user signs in to a connection; for signin auth, who is signed in, or a link to sign in."""
@@ -173,7 +180,8 @@ class Hub:
             raise ToolError(f"unknown tool {tool!r} in {name}; see smith_tools")
         if not spec.read_only:
             raise ToolError(f"{tool} changes data: call it as its own tool after the user confirms.")
-        try:
-            return await c.fns[tool](**args)
-        except TypeError as e:
+        try:  # the registered tool's own argument model: enum, map keys, bounds and types, as a direct call
+            values = self.mcp._tool_manager.get_tool(tool).fn_metadata.validate_arguments(args)
+            return await c.fns[tool](**values)
+        except (TypeError, ValidationError) as e:
             raise ToolError(f"bad arguments for {tool}: {e}") from e

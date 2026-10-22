@@ -17,13 +17,17 @@ from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .runtime import transforms
 
 ParamIn = Literal["path", "query", "header", "cookie", "body"]
 ArgType = Literal["string", "integer", "number", "boolean", "array", "object"]
 AuthType = Literal["bearer", "header", "query", "cookie", "basic", "browser", "signin"]
+BodyEncoding = Literal["json", "form", "multipart"]
+SCHEMA_VERSION = 1  # plan.yaml format; raise it (and migrate in load_plan) when a change breaks old plans
+# Plan models refuse unknown keys: a typo such as 'readonly: false' must fail, not leave a write tool read-only.
+STRICT = ConfigDict(extra="forbid")
 
 # Every pattern is used with fullmatch: `$` would accept a trailing newline.
 PLAN_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
@@ -33,7 +37,7 @@ TOOL_NAME = re.compile(r"[a-z][a-z0-9_]{0,63}")
 ARG_NAME = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 # Where an argument or fixed value goes: path.<name> | query.<name> | header.<name> | cookie.<name> | body | body.<a.b.c>
 # Split on the first dot only: query names may contain dots ('query.filters.minPrice').
-TARGET = re.compile(r"(path|query|header|cookie)\.\S+|body(\.\S+)?")
+TARGET = re.compile(r"(path|query|header|cookie|sql)\.\S+|body(\.\S+)?")  # sql.<n>: a :n placeholder of Tool.sql
 REPO = re.compile(r"https://github\.com/([\w.-]+)/([\w.-]+)", re.ASCII)
 TOOL_RESERVED = {"api", "tool", "mcp", "main", "run", "shape"}  # module-level names of the generated server
 ARG_RESERVED = {"api", "shape"}  # names the generated tool bodies use
@@ -98,7 +102,9 @@ def check_arg_name(v: str) -> str:
 
 def check_target(v: str) -> str:
     if not TARGET.fullmatch(v):
-        raise ValueError(f"bad target {v!r}; use path.<n>, query.<n>, header.<n>, cookie.<n>, body or body.<a.b>.")
+        raise ValueError(
+            f"bad target {v!r}; use path.<n>, query.<n>, header.<n>, cookie.<n>, body, body.<a.b> or sql.<n>."
+        )
     return v
 
 
@@ -141,6 +147,8 @@ class Param(BaseModel):
 
 
 class AuthScheme(BaseModel):
+    model_config = STRICT
+
     name: str = Field(description="Scheme name (OpenAPI securitySchemes key, or a label for captured traffic).")
     type: AuthType
     param: str = Field("", description="Header, query or cookie name that carries the credential.")
@@ -175,6 +183,7 @@ class Endpoint(BaseModel):
     params: list[Param] = []
     body_schema: dict[str, Any] | None = None
     body_example: Any = None
+    body_encoding: BodyEncoding = Field("json", description="How the request body is sent: JSON, form or multipart.")
     response_schema: dict[str, Any] | None = None
     response_example: Any = Field(None, description="A real (captured) or synthesized response body, trimmed.")
     auth: list[str] = Field([], description="AuthScheme names this endpoint needs.")
@@ -183,7 +192,7 @@ class Endpoint(BaseModel):
 
 
 class Source(BaseModel):
-    kind: Literal["openapi", "har", "app"]
+    kind: str = Field(description="Importer that made it: 'openapi', 'har', 'app', or a plugin importer's name.")
     title: str
     description: str = ""
     base_url: str
@@ -199,6 +208,8 @@ class Source(BaseModel):
 
 
 class ToolArg(BaseModel):
+    model_config = STRICT
+
     name: str = Field(description="Python identifier the model sees, e.g. 'query', 'max_price'.")
     type: ArgType = "string"
     description: str = Field(description="What it means, units and one example value.")
@@ -211,7 +222,11 @@ class ToolArg(BaseModel):
     )
     minimum: float | None = None
     maximum: float | None = None
-    to: str = Field(description="Request target: path.<n> | query.<n> | header.<n> | cookie.<n> | body | body.<a.b>")
+    to: str = Field(
+        "",
+        description="Request target: path.<n> | query.<n> | header.<n> | cookie.<n> | body | body.<a.b> | sql.<n>; "
+        "empty when only steps use the arg ($arg.<name>).",
+    )
     transform: str | None = Field(
         default=None, description="Input transform applied to the value before sending, e.g. 'jalali->unix'."
     )
@@ -229,17 +244,21 @@ class ToolArg(BaseModel):
     @field_validator("to")
     @classmethod
     def _to(cls, v: str) -> str:
-        return check_target(v)
+        return check_target(v) if v else v
 
 
 class Output(BaseModel):
+    model_config = STRICT
+
     root: str = Field(default="", description="Dotted path to the useful part of the response, e.g. 'data.products'.")
     fields: dict[str, str] = Field(
         default={},
         description="Output name -> dotted source path, applied to each item when root is a list. Empty keeps all.",
     )
-    max_items: int | None = Field(default=None, description="Cap on list length; the result also reports the count.")
-    clip: int = Field(default=400, description="Longest string kept, in characters.")
+    max_items: int | None = Field(
+        default=None, ge=0, description="Cap on list length; the result also reports the count."
+    )
+    clip: int = Field(default=400, ge=1, description="Longest string kept, in characters.")
     transforms: dict[str, str] = Field(
         default={}, description="Output name (a key of fields) -> output transform, e.g. {'day': 'unix->date'}."
     )
@@ -252,7 +271,62 @@ class Output(BaseModel):
         return v
 
 
+class Paginate(BaseModel):
+    """Follow pages: the tool calls its endpoint up to max_pages times and joins the lists under output.root."""
+
+    model_config = STRICT
+
+    style: Literal["page", "offset", "cursor", "next_url"] = Field(
+        "page", description="page: 1, 2, 3...; offset: 0, size, 2*size...; cursor/next_url: read from the response."
+    )
+    param: str = Field("", description="Target that carries the page, offset or cursor, e.g. 'query.page'.")
+    next: str = Field("", description="cursor/next_url: dotted response path of the next cursor or URL.")
+    start: int = Field(1, ge=0, description="First page number (page) or offset (offset).")
+    size: int = Field(0, ge=0, description="offset: items per page.")
+    max_pages: int = Field(3, ge=1, le=20, description="Most requests per tool call.")
+
+    @field_validator("param")
+    @classmethod
+    def _param(cls, v: str) -> str:
+        return check_target(v) if v else v
+
+
+STEP_REF = re.compile(r"\$(arg|prev|item)(\.\S+)?")  # $arg.<name> | $prev.<path> | $item.<path>
+
+
+class Step(BaseModel):
+    """A further request after the tool's own: its values come from the args or from the previous step's result."""
+
+    model_config = STRICT
+
+    endpoint: str = Field(description="Endpoint.id this step calls.")
+    args: dict[str, str] = Field(
+        {}, description="Target -> '$arg.<name>', '$prev.<path>' or (with for_each) '$item.<path>'."
+    )
+    fixed: dict[str, Any] = Field({}, description="Constant request values, same target syntax as ToolArg.to.")
+    for_each: str = Field("", description="Path of a list in the previous result: run once per item (max_items).")
+    max_items: int = Field(5, ge=1, le=20, description="Most items for_each runs on.")
+
+    @field_validator("args")
+    @classmethod
+    def _args(cls, v: dict[str, str]) -> dict[str, str]:
+        for target, ref in v.items():
+            check_target(target)
+            if not STEP_REF.fullmatch(ref):
+                raise ValueError(f"step value {ref!r} must be '$arg.<name>', '$prev.<path>' or '$item.<path>'.")
+        return v
+
+    @field_validator("fixed")
+    @classmethod
+    def _fixed(cls, v: dict[str, Any]) -> dict[str, Any]:
+        for key in v:
+            check_target(key)
+        return v
+
+
 class Tool(BaseModel):
+    model_config = STRICT
+
     name: str = Field(description="snake_case, starts with the plan prefix, e.g. 'pet_find_by_status'.")
     title: str = Field(description="Short human title, e.g. 'Find pets by status'.")
     description: str = Field(
@@ -262,6 +336,14 @@ class Tool(BaseModel):
     args: list[ToolArg] = []
     fixed: dict[str, Any] = Field({}, description="Constant request values, same target syntax as ToolArg.to.")
     output: Output = Output()
+    body_encoding: BodyEncoding = Field("json", description="How body.* values are sent: json, form or multipart.")
+    paginate: Paginate | None = Field(None, description="Follow pages of the endpoint's list (see Paginate).")
+    sql: str | None = Field(
+        None, description="Database plans: one statement with :name placeholders, filled by args with to='sql.<name>'."
+    )
+    steps: list[Step] = Field(
+        [], description="Requests after the tool's own, each fed by the one before; output shapes the last result."
+    )
     read_only: bool = True
     example: dict[str, Any] = Field({}, description="Arguments for tests and `mcpsmith check`.")
 
@@ -279,6 +361,9 @@ class Tool(BaseModel):
 
 
 class Plan(BaseModel):
+    model_config = STRICT
+
+    schema_version: int = Field(SCHEMA_VERSION, description="plan.yaml format version.")
     name: str = Field(description="Distribution / command name, [a-z0-9][a-z0-9-]{0,62}, e.g. 'petstore-mcp'.")
     title: str
     description: str = Field(description="One line, at most 100 characters (MCP Registry limit).")
@@ -298,6 +383,13 @@ class Plan(BaseModel):
     author: str = ""
     repository: str = Field("", description="https://github.com/<owner>/<repo> if known.")
     tools: list[Tool] = []
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_version(cls, v: int) -> int:
+        if not 1 <= v <= SCHEMA_VERSION:
+            raise ValueError(f"schema_version {v} is not supported (this mcpsmith reads 1..{SCHEMA_VERSION}); upgrade.")
+        return v
 
     @field_validator("name")
     @classmethod
@@ -352,6 +444,8 @@ def load_plan(path: str | Path) -> Plan:
 
 
 def save_plan(plan: Plan, path: str | Path) -> None:
-    data = plan.model_dump(mode="json", exclude_defaults=True)
+    data = {"schema_version": plan.schema_version, **plan.model_dump(mode="json", exclude_defaults=True)}
+    for tool, out in zip(plan.tools, data.get("tools", []), strict=True):
+        out["read_only"] = tool.read_only  # always explicit: validate treats an unset read_only on a POST as an error
     text = yaml.safe_dump(data, allow_unicode=True, sort_keys=False, width=120)
     Path(path).write_text(text, encoding="utf-8", newline="\n")

@@ -51,9 +51,12 @@ def test_form_and_multipart_params_are_body(src):
         ("body", True),
         "body",
     )
-    assert "form-encoded" in e.description
+    assert "form-encoded" in e.description and e.body_encoding == "form"
     up = ep(src, "upload")
     assert {p.location for p in up.params} == {"body"} and "multipart" in up.description
+    assert up.body_encoding == "multipart" and ep(src, "update").body_encoding == "json"
+    # @Field alone (the class annotation renamed or missing) still means a form
+    assert ep(src, "note").body_encoding == "form"
 
 
 def test_url_parameter_becomes_the_path(src):

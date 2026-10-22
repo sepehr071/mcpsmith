@@ -17,8 +17,10 @@ MAX_BODY = 2_000_000
 DROPPED = "<dropped>"
 SECRET_HEADERS = {"cookie", "set-cookie", "authorization", "proxy-authorization"}
 SECRET_PARTS = ("csrf", "xsrf", "verification")
+AUTH_SCHEMES = {"bearer", "basic", "digest", "token", "negotiate"}  # kept before '<dropped>' in Authorization
 SECRETISH = re.compile(r"pass|token|secret|auth|key|sig|cookie|session", re.I)
 TEXTUAL = re.compile(r"json|text|xml|javascript|x-www-form-urlencoded", re.I)
+API_TYPES = {"xhr", "fetch"}  # CDP resource types whose response bodies are kept
 
 
 def _url(url: str) -> str:
@@ -33,7 +35,12 @@ def _headers(h: dict | None) -> list[dict]:
     out = []
     for k, v in (h or {}).items():
         secret = k.lower() in SECRET_HEADERS or any(p in k.lower() for p in SECRET_PARTS) or _is_secret(k)
-        out.append({"name": k, "value": DROPPED if secret else str(v)})
+        value = DROPPED if secret else str(v)
+        # the scheme word ('Bearer', 'Basic') is no secret and tells the importer which auth this is
+        scheme = str(v).split(" ", 1)[0]
+        if secret and k.lower() in ("authorization", "proxy-authorization") and scheme.lower() in AUTH_SCHEMES:
+            value = f"{scheme} {DROPPED}"
+        out.append({"name": k, "value": value})
     return out
 
 
@@ -60,10 +67,13 @@ class Recorder:
             raise RuntimeError(f"already recording '{self.name}'; call smith_record_stop first")
         if not re.fullmatch(r"\w[\w.-]*", name):
             raise ValueError("name must be letters, digits, '_', '-' or '.'")
+        hosts = [h.strip().lower().lstrip(".") for h in hosts if h.strip().strip(".")]
+        if not hosts:  # no filter would record every site open in the shared Chrome (mail, bank, ...)
+            raise ValueError("hosts must name at least one site to record, e.g. ['shop.example.com']")
         info = browser.status()
         if not info:
             raise RuntimeError("Chrome is not running; start it with `mcpsmith browser`")
-        self.name, self.hosts = name, [h.lower().lstrip(".") for h in hosts]
+        self.name, self.hosts = name, hosts
         self.entries.clear()
         self._targets.clear()
         try:
@@ -129,7 +139,8 @@ class Recorder:
 
     async def _body(self, session: str | None, request_id: str, e: dict) -> None:
         mime = e["response"].get("mimeType") or ""
-        if e["size"] > MAX_BODY or not TEXTUAL.search(mime):
+        # API calls only: HTML pages and scripts carry names and codes the scrubber cannot recognise
+        if e["type"].lower() not in API_TYPES or e["size"] > MAX_BODY or not TEXTUAL.search(mime):
             return
         r = await self._cdp.call("Network.getResponseBody", {"requestId": request_id}, session=session)
         if len(r.get("body", "")) <= MAX_BODY:

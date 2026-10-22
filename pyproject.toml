@@ -1,7 +1,7 @@
 [project]
 name = "mcpsmith"
-version = "0.5.0"
-description = "Turn an OpenAPI file or a recorded website session into a curated, tested MCP server, with an LLM designing the tools."
+version = "0.6.0"
+description = "Turn an API spec, a website, an app, a Postman collection or a database into curated, tested MCP tools, designed by an LLM."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -35,6 +35,8 @@ dependencies = [
 stealth = ["httpx-curl-cffi>=0.1.5", "curl-cffi>=0.16.3"]
 # `mcpsmith capture`: record a browsing session to HAR.
 capture = ["playwright>=1.45"]
+# Database sources (`inspect sqlite:///shop.db`, postgresql://...): add the driver for your database, e.g. psycopg.
+sql = ["sqlalchemy>=2.0"]
 
 [project.urls]
 Homepage = "https://github.com/sepehr071/mcpsmith"

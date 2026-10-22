@@ -6,6 +6,13 @@ import base64
 
 
 def to_har(capture: dict) -> dict:
+    try:
+        return _to_har(capture)
+    except (KeyError, TypeError, AttributeError, ValueError) as e:  # ValueError: bad base64
+        raise ValueError(f"malformed REA capture ({type(e).__name__}: {e})") from e
+
+
+def _to_har(capture: dict) -> dict:
     tx: dict[str, dict] = {}
     for ev in ((capture.get("normalized_result") or {}).get("events") or {}).get("items") or []:
         t = tx.setdefault(ev.get("transaction_id"), {})

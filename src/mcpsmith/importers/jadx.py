@@ -62,8 +62,16 @@ def _tree(apk: Path, jar: str | None) -> Path | None:
         return out / "sources"
     CACHE.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(dir=CACHE))  # new and empty; becomes `out` only once jadx has finished
-    args = [exe, "-d", str(tmp), "--show-bad-code", "--no-res", str(apk.resolve())]
-    proc = subprocess.run(args, cwd=CACHE, capture_output=True, text=True, errors="replace")
+    # jadx.bat runs through cmd.exe, where an `&` in a path is a command separator: pass only names we made,
+    # relative to the cache directory (an APK copy named by its hash, the temp output directory).
+    copy = CACHE / f"{sha.hexdigest()}.apk"
+    try:
+        shutil.copyfile(apk, copy)
+        args = [exe, "-d", tmp.name, "--show-bad-code", "--no-res", copy.name]
+        proc = subprocess.run(args, cwd=CACHE, capture_output=True, text=True, errors="replace")
+    finally:
+        with contextlib.suppress(OSError):
+            copy.unlink()
     # jadx exits non-zero when some classes fail to decompile; the rest are still usable
     if not (tmp / "sources").is_dir() or not any((tmp / "sources").rglob("*.java")):
         shutil.rmtree(tmp, ignore_errors=True)

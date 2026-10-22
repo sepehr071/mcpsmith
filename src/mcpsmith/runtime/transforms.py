@@ -2,30 +2,20 @@
 
 from __future__ import annotations
 
+import logging
+import math
 import re
 from collections.abc import Callable
 from datetime import date, datetime, timedelta, tzinfo
+from functools import cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .. import plugins
 from .http import ApiError
 
-INPUT_NAMES = frozenset(
-    {
-        "date->unix",
-        "date->unix_end",
-        "jalali->unix",
-        "jalali->unix_end",
-        "jalali->date",
-        "date->jalali",
-        "toman->rial",
-        "int->str",
-    }
-)
-OUTPUT_NAMES = frozenset(
-    {"unix->date", "unix->datetime", "date->jalali", "jalali->date", "rial->toman", "minutes->hh:mm"}
-)
-NAMES = INPUT_NAMES | OUTPUT_NAMES
+# INPUT_NAMES, OUTPUT_NAMES and NAMES (frozensets, built-ins plus plugin transforms) come from __getattr__ below.
+log = logging.getLogger("mcpsmith")
 
 # Persian (U+06F0-06F9) and Arabic-Indic (U+0660-0669) digits to Latin
 _DIGITS = {ord(c): str(i) for i in range(10) for c in (chr(0x6F0 + i), chr(0x660 + i))}
@@ -92,9 +82,10 @@ def _jalali_text(d: date) -> str:
     return f"{jy}/{jm:02d}/{jd:02d}"
 
 
-def _zone(tz: str) -> tzinfo:
+def _zone(tz: str) -> tzinfo | None:
+    """None for an empty `tz`: naive datetimes then follow the OS zone rules (DST included), not today's offset."""
     if not tz:
-        return datetime.now().astimezone().tzinfo  # type: ignore[return-value]
+        return None
     try:
         return ZoneInfo(tz)
     except Exception as e:
@@ -102,15 +93,22 @@ def _zone(tz: str) -> tzinfo:
 
 
 def _unix(d: date, tz: str, end: bool = False) -> int:
-    start = int(datetime(d.year, d.month, d.day, tzinfo=_zone(tz)).timestamp())
-    return start + 86399 if end else start
+    """Start of the local day, or (`end`) one second before the next local midnight: days are 23 or 25 h on DST days."""
+    try:
+        day = d + timedelta(days=1) if end else d
+        return int(datetime(day.year, day.month, day.day, tzinfo=_zone(tz)).timestamp()) - int(end)
+    except (OverflowError, OSError, ValueError):  # OSError: Windows refuses some years
+        raise ApiError(f"Date {d} is out of range for unix time.") from None
 
 
 def _number(value: Any) -> float:
     try:
-        return float(str(value).translate(_DIGITS).replace(",", ""))
+        x = float(str(value).translate(_DIGITS).replace(",", ""))
     except ValueError:
-        raise ApiError(f"Bad number {value!r}: pass a plain number, e.g. 125000.") from None
+        x = math.nan
+    if not math.isfinite(x):
+        raise ApiError(f"Bad number {value!r}: pass a plain number, e.g. 125000.")
+    return x
 
 
 def _whole(x: float) -> int | float:
@@ -118,12 +116,18 @@ def _whole(x: float) -> int | float:
 
 
 def _from_unix(value: Any, tz: str) -> datetime:
-    return datetime.fromtimestamp(_number(value), _zone(tz))
+    try:
+        return datetime.fromtimestamp(_number(value), _zone(tz))
+    except (OverflowError, OSError, ValueError):  # OSError: Windows, e.g. a millisecond timestamp
+        raise ApiError(
+            f"Bad unix time {value!r}: expected seconds since 1970 (milliseconds are not seconds)."
+        ) from None
 
 
 def _minutes(value: Any) -> str:
-    hours, minutes = divmod(int(_number(value)), 60)
-    return f"{hours:02d}:{minutes:02d}"
+    n = int(_number(value))
+    hours, minutes = divmod(abs(n), 60)
+    return f"{'-' if n < 0 else ''}{hours:02d}:{minutes:02d}"
 
 
 _IN: dict[str, Callable[[Any, str], Any]] = {
@@ -146,15 +150,54 @@ _OUT: dict[str, Callable[[Any, str], Any]] = {
 }
 
 
+@cache
+def _tables() -> tuple[dict[str, Callable[[Any, str], Any]], dict[str, Callable[[Any, str], Any]]]:
+    """Built-in input and output transforms plus those of `mcpsmith.transforms` plugins (INPUT / OUTPUT dicts)."""
+    tables = {"INPUT": dict(_IN), "OUTPUT": dict(_OUT)}
+    for plugin, obj in plugins.load("mcpsmith.transforms").items():
+        for attr, table in tables.items():
+            extra = getattr(obj, attr, None) or {}
+            if not isinstance(extra, dict):
+                plugins.skip("mcpsmith.transforms", plugin, f"{attr} is not a dict")
+                continue
+            for name, fn in extra.items():
+                if name in table or not isinstance(name, str) or not callable(fn):
+                    why = "is already taken" if name in table else "needs a string name and a callable"
+                    plugins.skip("mcpsmith.transforms", plugin, f"{attr.lower()} transform {name!r} {why}")
+                    continue
+                table[name] = fn
+    return tables["INPUT"], tables["OUTPUT"]
+
+
+def __getattr__(name: str) -> frozenset[str]:
+    # Computed on first use, so a plugin may import this module while it loads.
+    if name == "INPUT_NAMES":
+        return frozenset(_tables()[0])
+    if name == "OUTPUT_NAMES":
+        return frozenset(_tables()[1])
+    if name == "NAMES":
+        return frozenset(_tables()[0]) | frozenset(_tables()[1])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def transform_in(name: str, value: Any, tz: str = "") -> Any:
     """Turn what the model passed into the API's wire format. None passes through."""
-    if name not in _IN:
-        raise ApiError(f"Unknown transform {name!r}; input transforms: {', '.join(sorted(_IN))}.")
-    return None if value is None else _IN[name](value, tz)
+    table = _tables()[0]
+    if name not in table:
+        raise ApiError(f"Unknown transform {name!r}; input transforms: {', '.join(sorted(table))}.")
+    return None if value is None else table[name](value, tz)
 
 
 def transform_out(name: str, value: Any, tz: str = "") -> Any:
-    """Turn an API output value into what the model should read. None passes through."""
-    if name not in _OUT:
-        raise ApiError(f"Unknown transform {name!r}; output transforms: {', '.join(sorted(_OUT))}.")
-    return None if value is None else _OUT[name](value, tz)
+    """Turn an API output value into what the model should read. None passes through; a value the transform
+    cannot read is returned unchanged, so one odd item does not fail the whole call."""
+    table = _tables()[1]
+    if name not in table:
+        raise ApiError(f"Unknown transform {name!r}; output transforms: {', '.join(sorted(table))}.")
+    if value is None:
+        return None
+    try:
+        return table[name](value, tz)
+    except Exception as e:  # plugin transforms too: the raw value is still useful to the model
+        log.debug("output transform %s kept %r: %s", name, value, e)
+        return value
