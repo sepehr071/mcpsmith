@@ -3,6 +3,33 @@
 All notable changes to toolsmelt (named mcpsmith up to 0.6.0). The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.8.0 - 2026-10-22
+
+### Added
+
+- SOAP services: `inspect` reads WSDL 1.1 (document/literal and rpc/literal) into one tool per operation.
+  `body_encoding: soap` wraps `body.*` in a SOAP 1.1 envelope, and a SOAP Fault becomes a clear error.
+- XML APIs: `body_encoding: xml` sends `body.*` as an XML document. XML responses come back as objects
+  (namespaces stripped, attributes as `@name`). DOCTYPE and ENTITY declarations are refused.
+- gRPC services (`toolsmelt[grpc]`): `inspect grpc://host:port` reads unary methods through server reflection.
+  Tools send `body.*` as the request message and `header.*` as metadata, and gRPC status codes map to clear errors.
+  Generated gRPC servers depend on `toolsmelt[grpc]`, and `<P>_PROXY` sends them through an HTTP proxy (inspect
+  uses `TOOLSMELT_PROXY` or the system proxy). A service the server's reflection cannot describe is skipped with a
+  note, and google/protobuf types come from the local library.
+- OAuth 2.1 resource server for Streamable HTTP. Set `MCP_OAUTH_ISSUER` (plus optional `MCP_OAUTH_AUDIENCE`,
+  `MCP_OAUTH_JWKS_URL`, `MCP_OAUTH_SCOPES` and `MCP_PUBLIC_URL`), and every request needs a JWT from your identity
+  provider:
+  - the JWKS is found through discovery;
+  - only RS256 and ES256 are accepted;
+  - the token's `iss`, `aud`, `exp` and scopes are checked;
+  - the protected-resource metadata is published at `/.well-known/oauth-protected-resource/mcp`.
+
+### Fixed
+
+- MySQL and MariaDB: read-only SQL tools now also run in a read-only session (`SET SESSION TRANSACTION READ ONLY`).
+  The statement check was the only guard before, and DDL commits on its own there. Verified on MariaDB 11.4.
+- gRPC URLs are no longer mistaken for database URLs.
+
 ## 0.7.0 - 2026-10-22
 
 ### Changed

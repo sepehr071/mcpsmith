@@ -20,6 +20,8 @@ uvx toolsmelt setup
 | Postman collection (v2.0/v2.1 export) | `toolsmelt inspect shop.postman_collection.json` |
 | cURL commands (DevTools "Copy as cURL") | `toolsmelt inspect requests.txt` |
 | SQL database (SQLite, PostgreSQL, MySQL, anything SQLAlchemy reads) | `pip install "toolsmelt[sql]"`, then `toolsmelt inspect sqlite:///shop.db` |
+| SOAP service (WSDL 1.1) or XML API | `toolsmelt inspect https://example.com/service.asmx?WSDL` |
+| gRPC service (server reflection) | `pip install "toolsmelt[grpc]"`, then `toolsmelt inspect grpc://localhost:50051` |
 | Website or logged-in dashboard | `toolsmelt browser`, then your agent records it (`toolsmelt capture <url>` records a HAR without the hub) |
 | Android app (APK you own) | `toolsmelt app-android app.apk --base-url https://api.example.com` |
 | Electron / JavaScript app | `toolsmelt app-js <dir\|app.asar\|file> --base-url https://api.example.com` |
@@ -230,7 +232,7 @@ A tool can also follow pages, or chain calls (one or the other per tool):
 
 `toolsmelt.yaml` is the plan, so you can regenerate. Each tool in `server.py` keeps its typed signature and calls `toolsmelt.runtime.interpret.run_tool`, the same code the hub runs.
 
-Run a generated server (or the hub, `toolsmelt mcp`) over Streamable HTTP instead of stdio with `--transport http --port 8000` (or `MCP_TRANSPORT=http`); it listens on 127.0.0.1 at `/mcp`. Set `MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on every request (needed before you bind to a non-loopback `--host`). To publish: add a PyPI trusted publisher (workflow `publish.yml`, environment `pypi`), bump the version in `pyproject.toml` and `server.json`, tag `v*`.
+Run a generated server (or the hub, `toolsmelt mcp`) over Streamable HTTP instead of stdio with `--transport http --port 8000` (or `MCP_TRANSPORT=http`); it listens on 127.0.0.1 at `/mcp`. Set `MCP_AUTH_TOKEN` to require `Authorization: Bearer <token>` on every request, or make it an OAuth 2.1 resource server for your identity provider with `MCP_OAUTH_ISSUER` (and optionally `MCP_OAUTH_AUDIENCE`, `MCP_OAUTH_SCOPES`, `MCP_PUBLIC_URL`): it validates the provider's JWTs (RS256/ES256, `iss`, `aud`, `exp`, scopes) and publishes `/.well-known/oauth-protected-resource/mcp`. Set one of them before you bind to a non-loopback `--host`. To publish: add a PyPI trusted publisher (workflow `publish.yml`, environment `pypi`), bump the version in `pyproject.toml` and `server.json`, tag `v*`.
 
 ### Databases
 
@@ -282,7 +284,7 @@ Add an input format, a value transform or a sign-in provider as your own install
 
 - No browser per call: JS challenges and captchas are out of scope. Sites that need them will fail at `check`.
 - A tool is one request, a paginated request (`paginate`) or a chain of requests (`steps`, with `for_each` fan-out). Logic beyond that (branching, computed values) needs hand edits to the generated `server.py`, and regenerating overwrites them.
-- The generated project is Python only. Servers speak stdio, or Streamable HTTP with `--transport http`; HTTP auth is one shared bearer token (`MCP_AUTH_TOKEN`), not OAuth, so put a gateway in front for per-user access.
+- The generated project is Python only. Servers speak stdio, or Streamable HTTP with `--transport http`; HTTP auth is a shared bearer token (`MCP_AUTH_TOKEN`) or OAuth tokens from your own identity provider (`MCP_OAUTH_ISSUER`); toolsmelt is not an authorization server.
 - A HAR only contains what you did while recording; unrecorded features are not in the plan.
 - Endpoints read from app code are unverified until `probe`; a method that cannot be read stays empty.
 - Request bodies are JSON, form (`application/x-www-form-urlencoded`) or multipart text fields (`body_encoding` on a tool); file uploads are not supported.

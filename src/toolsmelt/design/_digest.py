@@ -66,7 +66,7 @@ def _table(e: Endpoint, level: int) -> str:
 def _endpoint(e: Endpoint, level: int) -> str:
     if e.method == "SQL":
         return _table(e, level)
-    head = f"### {e.id}\n{e.method.upper()} {e.path}"
+    head = f"### {e.id}" if e.method == "RPC" else f"### {e.id}\n{e.method.upper()} {e.path}"  # the id is the method
     if e.count > 1:
         head += f"  (seen {e.count}x)"
     if not e.verified:
@@ -116,6 +116,11 @@ def digest(source: Source, budget: int = 60_000) -> str:
     eps = sorted(source.endpoints, key=_rank)
     if source.kind == "sql":
         head.append(f"\n## Tables ({len(eps)}, most rows first; sample rows below the columns, personal values masked)")
+    elif source.kind == "grpc":
+        head.append(
+            f"\n## Methods ({len(eps)} unary; request fields are body params with their proto types; responses are "
+            "skeletons of the response message, not real data)"
+        )
     else:
         head.append(f"\n## Endpoints ({len(eps)}, GET first, most used first; `*` = required)")
     header = "\n".join(head)

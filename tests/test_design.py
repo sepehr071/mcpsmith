@@ -103,8 +103,17 @@ def valid_plan() -> Plan:
 
 def test_guide_covers_reference():
     g = guide()
-    assert 80 <= len(g.splitlines()) <= 210
-    for s in ("body.<a.b.c>", "tags[].name", "max_items", "read_only", "<prefix>_<verb>_<noun>", "for_each", "sql."):
+    assert 80 <= len(g.splitlines()) <= 235
+    for s in (
+        "body.<a.b.c>",
+        "tags[].name",
+        "max_items",
+        "read_only",
+        "<prefix>_<verb>_<noun>",
+        "for_each",
+        "sql.",
+        "@xmlns",
+    ):
         assert s in g
 
 
@@ -270,6 +279,17 @@ def test_paginated_and_stepped_tools_are_valid():
             "body_encoding form",
         ),
         (lambda p: p.tools.append(cart()), "set read_only explicitly"),
+        (
+            lambda p: p.tools.append(
+                cart(read_only=False, body_encoding="xml", args=[arg("a", to="body.A.x"), arg("b", to="body.B.y")])
+            ),
+            "one root element",
+        ),
+        (lambda p: p.tools.append(cart(read_only=False, body_encoding="soap")), "found none"),
+        (
+            lambda p: p.tools.append(cart(read_only=False, body_encoding="soap", args=[arg("b", to="body")])),
+            "not 'body'",
+        ),
         # paginate and steps
         (lambda p: setattr(p.tools[0], "paginate", Paginate()), "needs param"),
         (lambda p: setattr(p.tools[0], "paginate", Paginate(param="path.productId")), "also set by"),
@@ -415,6 +435,90 @@ def test_validate_source_method_must_match_read_only():
     assert not _errors(plan, src) and any("read_only" in i.message for i in validate(plan, src))
 
 
+GRPC_SOURCE = Source(
+    kind="grpc",
+    title="shop",
+    base_url="grpc://127.0.0.1:50051",
+    endpoints=[
+        Endpoint(
+            id=f"RPC shop.v1.Catalog/{m}",
+            method="RPC",
+            path=f"shop.v1.Catalog/{m}",
+            summary=f"{m}.",
+            params=[Param(name="id", location="body", example="p1")],
+            response_example={"id": "p1", "name": "Green tea"},
+        )
+        for m in ("GetProduct", "BatchGetProducts", "DeleteProduct")
+    ],
+)
+
+
+def grpc_tool(**kw):
+    kw = {"endpoint": "RPC shop.v1.Catalog/GetProduct", "read_only": True, "example": {"id": "p1"}} | kw
+    args = [arg("id", required=True, to="body.id"), arg("trace", to="header.x-trace")]
+    return Tool(name="shop_product", title="Product", description="One product.", args=args, **kw)
+
+
+def grpc_plan(*tools, **update):
+    auth = AuthScheme(name="bearer", type="bearer", env="SHOP_MCP_TOKEN")
+    update = {"base_url": GRPC_SOURCE.base_url, "auth": auth, "tools": list(tools or [grpc_tool()])} | update
+    return valid_plan().model_copy(update=update)
+
+
+def test_grpc_plan_is_valid():
+    for src in (GRPC_SOURCE, None):
+        issues = validate(grpc_plan(), src)
+        assert not [i for i in issues if i.level == "error"], issues
+        assert not [i for i in issues if "read_only" in i.message], issues  # explicit read_only: no RPC warning
+    off = grpc_plan(grpc_tool(read_only=False, endpoint="RPC shop.v1.Catalog/DeleteProduct"))
+    assert not _errors(off, GRPC_SOURCE)
+
+
+@pytest.mark.parametrize(
+    "plan, needle",
+    [
+        (grpc_plan(grpc_tool(fixed={"query.x": 1})), "body.<field> (message fields) and header.<key>"),
+        (grpc_plan(grpc_tool(fixed={"cookie.x": 1})), "header.<key> (metadata) only"),
+        (grpc_plan(grpc_tool(fixed={"path.x": 1})), "header.<key> (metadata) only"),
+        (grpc_plan(grpc_tool(body_encoding="form")), "body_encoding: json"),
+        (grpc_plan(grpc_tool(paginate=Paginate(style="next_url", next="next"))), "no next URL"),
+        (grpc_plan(auth=AuthScheme(name="k", type="query", param="key", env="SHOP_MCP_KEY")), "must be one of"),
+        (grpc_plan(auth=AuthScheme(name="k", type="header", env="SHOP_MCP_KEY")), "needs param"),
+        (grpc_plan(base_url="grpc://"), "has no host"),
+        (
+            grpc_plan(Tool(name="shop_x", title="X", description="X.", endpoint="RPC shop.v1.Catalog/GetProduct")),
+            "set read_only explicitly",
+        ),
+    ],
+)
+def test_grpc_validate_errors(plan, needle):
+    errors = _errors(plan, GRPC_SOURCE)
+    assert any(needle in e.message for e in errors), errors
+
+
+def test_grpc_unset_read_only_in_legacy_plan_warns():
+    tool = Tool(name="shop_x", title="X", description="X.", endpoint="RPC shop.v1.Catalog/GetProduct")
+    plan = grpc_plan(tool)
+    legacy = Plan.model_validate(plan.model_dump(exclude_unset=True, exclude={"schema_version"}))
+    issues = validate(legacy, GRPC_SOURCE)
+    assert not [i for i in issues if i.level == "error"]
+    assert any(i.level == "warning" and "set read_only explicitly" in i.message for i in issues)
+
+
+def test_grpc_draft_guesses_read_only_explicitly():
+    notes: list[str] = []
+    plan = draft(GRPC_SOURCE, notes=notes)
+    by_method = {t.endpoint.rpartition("/")[2]: t for t in plan.tools}
+    assert by_method["GetProduct"].read_only and by_method["BatchGetProducts"].read_only
+    assert not by_method["DeleteProduct"].read_only
+    assert all("read_only" in t.model_fields_set for t in plan.tools)
+    assert [n for n in notes if "read_only" in n] == [
+        f"{by_method['DeleteProduct'].name}: read_only false for gRPC method shop.v1.Catalog/DeleteProduct; "
+        "set true if it changes nothing"
+    ]
+    assert not [i for i in validate(plan, GRPC_SOURCE) if i.level == "error"]
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
@@ -474,6 +578,12 @@ def test_draft_names_graphql_operations():
     assert [t.name for t in draft(src, "shop-mcp").tools] == ["shop_get_user", "shop_list_orders"]
 
 
+def test_draft_names_grpc_methods():
+    ops = [Endpoint(id=f"RPC shop.v1.Catalog/{m}", method="RPC", path=f"shop.v1.Catalog/{m}") for m in ("GetProduct",)]
+    src = Source(kind="grpc", title="Shop", base_url="grpc://localhost:50051", endpoints=ops)
+    assert [t.name for t in draft(src, "shop-mcp").tools] == ["shop_get_product"]
+
+
 def test_draft_avoids_reserved_names():
     src = shop()
     src.endpoints[0].params.append(Param(name="api", location="query"))
@@ -520,6 +630,17 @@ def test_validate_new_warnings():
     text = " ".join(i.message for i in issues)
     for needle in ("io.github.example/shop-mcp", "['prodcut_id'] are not args", "collector.evil.example"):
         assert needle in text
+
+
+def test_validate_soap_action():
+    plan = valid_plan()
+    soap = cart(read_only=False, body_encoding="soap", args=[arg("a", to="body.m:Add.a")])
+    plan.tools.append(soap)
+    issues = validate(plan)
+    assert not [i for i in issues if i.level == "error"], issues
+    assert any("no SOAPAction" in i.message for i in issues)
+    soap.fixed = {"header.SOAPAction": "urn:c#Add", "body.m:Add.@xmlns:m": "urn:c"}
+    assert not any("SOAPAction" in i.message for i in validate(plan))
 
 
 def test_draft_skips_binary_and_shapes_maps_secrets_and_forms():

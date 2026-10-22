@@ -21,7 +21,7 @@ from typing import Any
 from .http import ApiError
 
 DSN = re.compile(r"([A-Za-z][A-Za-z0-9_]*)(\+[A-Za-z0-9_]+)?://.*", re.S)  # dialect[+driver]://...
-NOT_DB = {"http", "https", "file", "ftp", "ws", "wss"}
+NOT_DB = {"http", "https", "file", "ftp", "ws", "wss", "grpc", "grpcs"}
 PLACEHOLDER = re.compile(r"(?<![:\w\\]):(\w+)(?![:\w])")  # the bind-parameter rule of SQLAlchemy's text()
 # Literals and quoted names, blanked before the read-only checks so their text cannot trip (or hide) anything.
 LITERAL = re.compile(r"'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|`(?:[^`]|``)*`")
@@ -91,6 +91,10 @@ def session(engine: Any, read_only: bool, timeout: int) -> Iterator[Any]:
             if read_only:
                 conn.exec_driver_sql("SET TRANSACTION READ ONLY")
             conn.exec_driver_sql(f"SET LOCAL statement_timeout = {int(timeout * 1000)}")
+        elif engine.dialect.name in ("mysql", "mariadb"):
+            # session-wide, not SET TRANSACTION: DDL commits implicitly and would escape a one-transaction read-only
+            # (checked on MariaDB 11.4); set on every checkout so a pooled connection never keeps the other mode
+            conn.exec_driver_sql(f"SET SESSION TRANSACTION {'READ ONLY' if read_only else 'READ WRITE'}")
         # shortcut: no statement timeout on other dialects; add MySQL's max_execution_time when a plan needs it
         try:
             yield conn

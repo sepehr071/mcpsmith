@@ -27,6 +27,8 @@ from ..model import (
     endpoint_method,
 )
 from ..runtime import signin, transforms
+from ..runtime.grpc import AUTH_TYPES as GRPC_AUTH
+from ..runtime.grpc import is_grpc
 from ..runtime.sql import is_dsn, placeholders, read_only_problem
 
 PATH_PARAM = re.compile(r"\{([^}]+)\}")
@@ -95,10 +97,18 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
 
     if len(plan.description) > 100:
         err("plan.description", f"{len(plan.description)} chars; shorten it to at most 100 (MCP Registry limit).")
-    db = is_dsn(plan.base_url)  # a database plan: its tools run SQL
+    rpc = is_grpc(plan.base_url)  # a gRPC plan: endpoints 'RPC pkg.Svc/Method', values sent as message and metadata
+    db = is_dsn(plan.base_url) and not rpc  # a database plan: its tools run SQL (grpc:// also looks like a DSN)
     if db:
         if plan.auth and plan.auth.type != "basic":
             err("plan.auth", f"a database plan's auth is {{type: basic, env: {plan.env_prefix}_DB_PASSWORD}}.")
+    elif rpc:
+        if not urlsplit(plan.base_url).hostname:
+            err("plan.base_url", f"{plan.base_url!r} has no host; set it to e.g. 'grpcs://api.example.com:443'.")
+        if plan.auth and plan.auth.type not in GRPC_AUTH:
+            err("plan.auth", f"gRPC sends credentials as metadata: auth type must be one of {sorted(GRPC_AUTH)}.")
+        elif plan.auth and plan.auth.type == "header" and not plan.auth.param:
+            err("plan.auth.param", "gRPC header auth needs param: the metadata key that carries the credential.")
     elif not plan.base_url.startswith(("http://", "https://")):
         err(
             "plan.base_url",
@@ -251,6 +261,23 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
             err(w, "a whole-body value that is not an object cannot be combined with body.<key> targets.")
         if tool.body_encoding != "json" and "body" in targets:
             err(w, f"body_encoding {tool.body_encoding} sends named fields; use body.<name> targets, not 'body'.")
+        if tool.body_encoding in ("xml", "soap"):
+            if len(roots := sorted({t[5:].split(".")[0] for t in body_keys})) != 1:
+                err(
+                    w,
+                    f"body_encoding {tool.body_encoding} sends one XML document: put every body target under one root "
+                    f"element, body.<Root>.<field> (found {roots or 'none'}).",
+                )
+            if tool.body_encoding == "soap" and "header.soapaction" not in {t.lower() for t in targets}:
+                warn(w, "no SOAPAction: most SOAP services need the operation's action as fixed header.SOAPAction.")
+        if rpc:
+            step_targets = [k for s in tool.steps for k in [*s.args, *s.fixed]]
+            if bad := sorted({t for t in targets + step_targets if t.partition(".")[0] in ("path", "query", "cookie")}):
+                err(w, f"{bad}: a gRPC call takes body.<field> (message fields) and header.<key> (metadata) only.")
+            if tool.body_encoding != "json":
+                err(w, "gRPC messages are sent from JSON fields; set body_encoding: json.")
+            if tool.paginate and tool.paginate.style == "next_url":
+                err(f"{w}.paginate", "gRPC has no next URL; use style cursor with the response's page token field.")
         if p := tool.paginate:
             pw = f"{w}.paginate"
             if p.style != "next_url" and not p.param:
@@ -295,7 +322,7 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
             smethod = sep.method.upper() if sep else endpoint_method(step.endpoint)
             if sep and not smethod:
                 err(sw, f"endpoint {sep.id!r} has no HTTP method (not readable from the app); set it in the source.")
-            if tool.read_only and smethod and smethod != "GET":
+            if tool.read_only and smethod and smethod != "GET" and not rpc:  # an RPC's read_only is the designer's
                 err(sw, f"{smethod} step in a read_only tool; set read_only: false or use a GET endpoint.")
             spath = sep.path if sep else (step.endpoint.split()[-1] if smethod else "")
             for param in PATH_PARAM.findall(spath):
@@ -315,7 +342,12 @@ def validate(plan: Plan, source: Source | None = None) -> list[Issue]:
 
         ep = source.endpoint(tool.endpoint) if source else None
         method = None if tool.sql is not None else ep.method.upper() if ep else endpoint_method(tool.endpoint)
-        if method in WRITE_METHODS and tool.read_only:
+        if rpc:  # a method name says nothing reliable about writes
+            if "read_only" not in tool.model_fields_set:
+                (err if "schema_version" in plan.model_fields_set else warn)(
+                    w, "set read_only explicitly for a gRPC method: true only if it changes nothing."
+                )
+        elif method in WRITE_METHODS and tool.read_only:
             err(w, f"{method} endpoint marked read_only; set read_only: false (it changes data).")
         elif (
             method == "POST" and "read_only" not in tool.model_fields_set and "schema_version" in plan.model_fields_set

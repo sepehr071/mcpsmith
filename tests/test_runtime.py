@@ -429,6 +429,80 @@ async def test_form_and_multipart_bodies():
     assert len(seen) == 2
 
 
+async def test_xml_and_soap_bodies():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, text="<ok/>", headers={"content-type": "application/xml"})
+
+    api = make_api(handler)
+    body = {"Order.@id": 'a"1', "Order.Note": "x < y & z", "Order.Item": [1, 2], "Order.Item2.#text": "t"}
+    await api.call("POST", "/x", body=body, encoding="xml")
+    assert seen[0].headers["content-type"] == "application/xml"
+    assert seen[0].content == (
+        b"<?xml version='1.0' encoding='utf-8'?>\n"
+        b'<Order id="a&quot;1"><Note>x &lt; y &amp; z</Note><Item>1</Item><Item>2</Item><Item2>t</Item2></Order>'
+    )
+    await api.call(
+        "POST",
+        "/s",
+        body={"m:Add.@xmlns:m": "urn:c", "m:Add.a": 2},
+        headers={"SOAPAction": "urn:c#Add"},
+        encoding="soap",
+    )
+    assert (
+        seen[1].headers["content-type"] == "text/xml; charset=utf-8" and seen[1].headers["soapaction"] == '"urn:c#Add"'
+    )
+    assert seen[1].content.endswith(
+        b'<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body>'
+        b'<m:Add xmlns:m="urn:c"><a>2</a></m:Add></soap:Body></soap:Envelope>'
+    )
+    with pytest.raises(ApiError, match="exactly one root element"):
+        await api.call("POST", "/x", body={"a.b": 1, "c": 2}, encoding="xml")
+    with pytest.raises(ApiError, match="not a valid XML element name"):  # an object arg's keys must not carry markup
+        await api.call("POST", "/x", body={"a": {"b><script": 1}}, encoding="xml")
+    with pytest.raises(ApiError, match="valid XML attribute"):
+        await api.call("POST", "/x", body={"a.@b": {"c": 1}}, encoding="xml")
+    assert len(seen) == 2
+
+
+async def test_xml_responses():
+    replies = {
+        "/plain": ('<r xmlns="urn:x" xmlns:p="urn:p"><p:id>1</p:id><tag k="v">a</tag><tag>b</tag><e/></r>', "text/xml"),
+        "/mixed": ("<?xml version='1.0'?><r>hello <b>x</b></r>", ""),
+        "/soap": (
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+            '<AddResponse xmlns="http://tempuri.org/"><AddResult>5</AddResult></AddResponse></s:Body></s:Envelope>',
+            "text/xml; charset=utf-8",
+        ),
+        "/fault12": (
+            '<e:Envelope xmlns:e="http://www.w3.org/2003/05/soap-envelope"><e:Body><e:Fault><e:Code><e:Value>e:Sender'
+            '</e:Value></e:Code><e:Reason><e:Text xml:lang="en">Bad input</e:Text></e:Reason></e:Fault></e:Body>'
+            "</e:Envelope>",
+            "application/soap+xml",
+        ),
+        "/dtd": ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY a "aaaaaaaa">]><r>&a;</r>', "application/xml"),
+        "/html": ("<html><body>hi</body></html>", "text/html"),
+        "/broken": ("<not xml", ""),
+    }
+
+    def handler(request):
+        text, ctype = replies[request.url.path.removeprefix("/v1")]
+        return httpx.Response(200, text=text, headers={"content-type": ctype} if ctype else {})
+
+    api = make_api(handler)
+    assert await api.call("GET", "/plain") == {"id": "1", "tag": [{"@k": "v", "#text": "a"}, "b"], "e": None}
+    assert await api.call("GET", "/mixed") == {"b": "x", "#text": "hello"}
+    assert await api.call("GET", "/soap") == {"AddResult": "5"}
+    with pytest.raises(ApiError, match=r"SOAP fault \(e:Sender\): Bad input"):
+        await api.call("GET", "/fault12")
+    with pytest.raises(ApiError, match="DTD or entity declaration, refused"):
+        await api.call("GET", "/dtd")
+    assert await api.call("GET", "/html") == {"text": "<html><body>hi</body></html>"}
+    assert await api.call("GET", "/broken") == {"text": "<not xml"}  # only looked like XML
+
+
 async def test_empty_path_value_refused():
     api = make_api(lambda r: httpx.Response(200, json={}))
     with pytest.raises(ApiError, match="Missing value for path parameter 'id'"):

@@ -1,5 +1,5 @@
 """Read an OpenAPI 3.x / Swagger 2.0 spec, a HAR recording, an REA browser-scenario capture, a Postman collection
-(JSON or YAML, file or URL), a file of cURL commands or a database URL into a Source."""
+(JSON or YAML, file or URL), a WSDL file, a file of cURL commands, a database URL or a gRPC URL into a Source."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ import httpx
 import yaml
 
 from toolsmelt import plugins
-from toolsmelt.importers import android, curl, electron, har, openapi, postman, rea, sql  # noqa: F401  (android, electron: see app-android, app-js)
+from toolsmelt.importers import android, curl, electron, har, openapi, postman, rea, sql, wsdl  # noqa: F401  (android, electron: see app-android, app-js)
+from toolsmelt.importers import grpc as grpc_source
 from toolsmelt.model import Source
 from toolsmelt.runtime.http import tls_context
 
@@ -55,6 +56,8 @@ def load(path_or_url: str, hosts: list[str] | None = None) -> Source:
     Built-in formats come first; any other local file is offered to `toolsmelt.importers` plugins.
     """
     origin, path = None, None
+    if grpc_source.is_grpc(path_or_url):  # grpc://host:port, read through server reflection
+        return grpc_source.parse(path_or_url)
     if sql.sniff(path_or_url):  # a database URL: sqlite:///shop.db, postgresql://user@host/db, ...
         return sql.parse(path_or_url)
     if path_or_url.startswith(("http://", "https://")):
@@ -67,6 +70,11 @@ def load(path_or_url: str, hosts: list[str] | None = None) -> Source:
             text = path.read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:  # binary: only a plugin can read it
             text = None
+    if wsdl.sniff(text):  # XML: before _parse, which would not give a dict for it
+        try:
+            return wsdl.parse(text, origin=origin)
+        except ValueError as e:
+            raise ValueError(f"{path_or_url}: {e}") from e
     doc = _parse(text)
     if isinstance(doc, dict):
         try:
