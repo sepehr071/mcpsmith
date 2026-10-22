@@ -20,7 +20,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: ${{ matrix.python }}
-      - run: uv sync --locked --extra sql
-      - run: uv run --extra sql ruff check .
-      - run: uv run --extra sql ruff format --check .
-      - run: uv run --extra sql pytest -q
+      - run: uv sync --locked --extra sql --extra grpc
+      - run: uv run --extra sql --extra grpc ruff check .
+      - run: uv run --extra sql --extra grpc ruff format --check .
+      - run: uv run --extra sql --extra grpc pytest -q

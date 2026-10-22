@@ -31,6 +31,8 @@ NOISE = {
     "refresh", "session", "consent", "captcha", "sentry", "ads", "experiments", "abtest", "flags",
 }  # fmt: skip
 VERBS = {"GET": "get", "POST": "create", "PUT": "update", "PATCH": "update", "DELETE": "delete"}
+READS = {"get", "list", "find", "search", "query"}  # SOAP operation names that look like reads
+RPC_READS = READS | {"read", "describe", "count"}  # gRPC method names that look like reads (and BatchGet)
 TYPES = {bool: "boolean", int: "integer", float: "number", str: "string", list: "array", dict: "object"}
 MAX_TOOLS = 25
 SQL_TOOLS = 15
@@ -45,8 +47,20 @@ def _snake(text: str) -> str:
     return "_".join(_words(text))
 
 
+def _soap_op(e: Endpoint) -> str | None:
+    """The operation name of a SOAP endpoint ('SOAP <Service>.<Operation>'); all of a service share one path."""
+    return e.id.rpartition(".")[2] if e.body_encoding == "soap" and e.id.startswith("SOAP ") else None
+
+
 def _is_noise(e: Endpoint) -> bool:
-    return any(w in NOISE for w in _words(re.sub(r"\{[^}]*\}", "", e.path)))
+    return any(w in NOISE for w in _words(_soap_op(e) or re.sub(r"\{[^}]*\}", "", e.path)))
+
+
+def _is_fixed(p: Param) -> bool:
+    """XML/SOAP constants: the SOAPAction header and the request element's namespace ('<Root>.@xmlns...')."""
+    if p.location == "header":
+        return p.name.lower() == "soapaction"
+    return p.location == "body" and p.name.rpartition(".")[2].startswith("@xmlns")
 
 
 def _ident(name: str, taken: set[str]) -> str:
@@ -65,8 +79,12 @@ def _ident(name: str, taken: set[str]) -> str:
 def _tool_name(e: Endpoint, prefix: str, taken: set[str]) -> str:
     if " " not in e.id:  # an operationId
         words = _words(e.id)
+    elif op := _soap_op(e):
+        words = _words(op)
     elif "#" in e.id:  # a GraphQL operation from captured traffic: 'POST /graphql#GetUser'
         words = _words(e.id.partition("#")[2])
+    elif e.method.upper() == "RPC":  # gRPC 'pkg.Svc/GetProduct': the method name says what it does
+        words = _words(e.path.rpartition("/")[2])
     else:
         path = [
             w for w in _words(re.sub(r"\{[^}]*\}", "", e.path)) if w not in GENERIC and not re.fullmatch(r"v\d+", w)
@@ -161,14 +179,15 @@ def _args(e: Endpoint) -> tuple[list[ToolArg], dict[str, Any]]:
     args: list[ToolArg] = []
     example: dict[str, Any] = {}
     taken: set[str] = set()
+    xml = e.body_encoding in ("xml", "soap")
     for p in e.params:
         to = f"{p.location}.{p.name}"
-        if not TARGET.fullmatch(to):
+        if not TARGET.fullmatch(to) or (xml and _is_fixed(p)):
             continue  # shortcut: wire names with dots/spaces have no target syntax; the LLM or developer maps them
         if p.location in NO_WIRE_FORM.get(p.type, ()) or (p.location == "path" and f"{{{p.name}}}" not in e.path):
             continue  # no wire form there (validate refuses it), or a path param the template does not use
         required = p.required or p.location == "path"
-        name = _ident(p.name, taken)
+        name = _ident(p.name.rpartition(".")[2] if xml and p.location == "body" else p.name, taken)  # Root.City: city
         sample = _sample(p)
         desc = p.description.strip() or f"{p.name} ({p.location} parameter)."
         if sample is not None and "e.g." not in desc:
@@ -320,11 +339,23 @@ def draft(source: Source, name: str | None = None, notes: list[str] | None = Non
         if extra and _first_sentence(extra) != description:
             description += "\n" + extra[:300]
         args, example = _args(e)
+        read_only = e.method.upper() == "GET"
+        if op := _soap_op(e):  # every SOAP call is a POST: guess from the name, and say so
+            read_only = bool(set(_words(op)[:1]) & READS)
+            if notes is not None:
+                notes.append(f"{tname}: read_only {str(read_only).lower()} guessed from the operation name; check it")
+        elif e.method.upper() == "RPC":  # gRPC: no HTTP verb, so guess from the method name
+            words = _words(e.path.rpartition("/")[2])
+            read_only = bool(set(words[:1]) & RPC_READS) or words[:2] == ["batch", "get"]
+            if not read_only and notes is not None:
+                notes.append(f"{tname}: read_only false for gRPC method {e.path}; set true if it changes nothing")
+        xml = e.body_encoding in ("xml", "soap")
+        fixed = {f"{p.location}.{p.name}": p.default or "" for p in e.params if xml and _is_fixed(p)}
         tools.append(
             Tool(
-                name=tname, title=title[:80], description=description, endpoint=e.id, args=args,
+                name=tname, title=title[:80], description=description, endpoint=e.id, args=args, fixed=fixed,
                 output=Output() if _is_map(e) else _output(e.response_example), body_encoding=e.body_encoding,
-                read_only=e.method.upper() == "GET", example=example,
+                read_only=read_only, example=example,
             )
         )  # fmt: skip
 

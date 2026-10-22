@@ -98,6 +98,25 @@ steps: [{endpoint: "GET /items/{id}", args: {path.id: $item.objectID}, for_each:
 output: {fields: {title: title, points: points}}
 ```
 
+## XML and SOAP
+
+`toolsmelt inspect service.wsdl` (or its `?wsdl` URL) makes one endpoint per operation, `SOAP <Service>.<Operation>`.
+`body_encoding: xml` sends the `body.*` values as one XML document, `soap` inside a SOAP 1.1 envelope: every body
+target sits under one root element (`body.<Root>.<field>`); `@name` keys are attributes, `#text` the text, a list
+repeats the element, an object arg becomes child elements in the order given (keep the schema's order). The root's
+namespace is fixed: `body.<Root>.@xmlns` (qualified fields), or `body.m:<Root>.@xmlns:m` (rpc or unqualified), and
+so is `header.SOAPAction`. XML answers become objects without the root (or SOAP Body) element: namespaces dropped,
+`@name` attributes, repeated elements as lists (a single one stays an object), values as text. A SOAP Fault is an
+error. Every operation is a POST: set `read_only` from what it does.
+
+```yaml
+endpoint: SOAP Calculator.Add
+fixed: {header.SOAPAction: http://tempuri.org/Add, body.Add.@xmlns: http://tempuri.org/}
+args: [{name: a, type: integer, description: "First number, e.g. 2.", required: true, to: body.Add.intA}]
+output: {fields: {sum: AddResult}}
+body_encoding: soap
+```
+
 ## Databases
 
 `toolsmelt inspect sqlite:///C:/data/shop.db` (or `postgresql://user@host/db`, any URL SQLAlchemy 2 opens; needs
@@ -121,6 +140,15 @@ args:
 - {name: status, description: "Order status, e.g. 'paid'.", to: sql.status}
 - {name: limit, type: integer, description: "Most rows, e.g. 20.", default: 20, maximum: 100, to: sql.limit}
 ```
+
+## gRPC
+
+`toolsmelt inspect grpcs://api.example.com:443` (or `grpc://` for plaintext; needs `toolsmelt[grpc]` and server
+reflection) makes one endpoint per unary method, `RPC <package>.<Service>/<Method>`. Message fields are `body.<field>`
+targets, metadata is `header.<key>`; path, query and cookie targets are errors, `body_encoding` stays `json`, and
+paging is `cursor` or `page`/`offset` on a body field, never `next_url`. Auth is `bearer`, `basic` or `header` (with
+`param`, the metadata key). A method name says nothing reliable about writes: every gRPC tool must set `read_only`
+explicitly; the draft guesses true for Get/List/Search/Find/Query/Read/Describe/Count/BatchGet, false otherwise.
 
 ## Safety and the rest
 
@@ -156,9 +184,9 @@ logged out, never their values); `generate` refuses browser-auth plans, switch t
 `author`, `repository`, `tools`.
 
 Tool: `name`, `title`, `description`, `endpoint` (an endpoint id from the digest), `args`, `fixed`
-(target -> constant), `output`, `body_encoding` (`json` default, `form` or `multipart`: how `body.<name>` values
-are sent; form and multipart need named `body.<name>` targets, not a whole `body`), `paginate` (`style`, `param`,
-`next`, `start`, `size`, `max_pages`), `steps` (each: `endpoint`, `args` target -> ref, `fixed`, `for_each`,
+(target -> constant), `output`, `body_encoding` (`json` default, `form`, `multipart`, `xml` or `soap`: how
+`body.<name>` values are sent; all but json need named `body.<name>` targets, not a whole `body`), `paginate`
+(`style`, `param`, `next`, `start`, `size`, `max_pages`), `steps` (each: `endpoint`, `args` target -> ref, `fixed`, `for_each`,
 `max_items`), `sql` (database plans: one statement with `:name` placeholders), `read_only`, `example` (arg name
 -> value).
 
@@ -194,8 +222,9 @@ already sets; a step with an unknown endpoint, an unfilled `{param}`, `$arg.x` n
 `for_each`, or a non-GET endpoint in a read_only tool; over 50 requests per call; an arg with no `to` that no step
 reads; a database plan's tool without `sql`, or `sql` without a database `base_url`; a `:name` with no `sql.<name>`
 value or the reverse; HTTP targets, `paginate` or `steps` on a sql tool; a read_only `sql` that is not one plain
-SELECT.
+SELECT; an `xml` or `soap` tool whose body targets do not share exactly one root element.
 Warnings: description first line not ending with `.`; more than 20 tools; required args missing from `example`
 or example keys that are not args; an output path that resolves to nothing in the endpoint's response example;
 no `fields` on an endpoint whose example response is over 4 KB; a non-GET tool marked `read_only` (fine for
-searches sent as POST); an endpoint on another host than `base_url`; an empty `repository`.
+searches sent as POST); an endpoint on another host than `base_url`; an empty `repository`; a `soap` tool without
+a `header.SOAPAction` value.

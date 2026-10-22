@@ -18,7 +18,9 @@ import random
 import re
 import ssl
 import time
+import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from typing import Any
 from urllib.parse import quote
 
@@ -32,6 +34,10 @@ log = logging.getLogger("toolsmelt")
 
 AUTH_TYPES = {"bearer", "header", "query", "cookie", "basic", "browser", "signin"}
 IDEMPOTENT = {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
+SOAP_ENV = "http://schemas.xmlsoap.org/soap/envelope/"
+SOAP12_ENV = "http://www.w3.org/2003/05/soap-envelope"
+XML_NAME = re.compile(r"[A-Za-z_][\w.-]*(:[A-Za-z_][\w.-]*)?")  # an element or attribute name, optional prefix
+DTD = re.compile(rb"<!(DOCTYPE|ENTITY)", re.IGNORECASE)
 
 
 class ApiError(ToolError):
@@ -143,7 +149,9 @@ class Api:
 
         `url` is a path template relative to base_url ("/pet/{petId}", filled from `path`) or an absolute URL on
         an allowed host. None values are dropped; dotted `body` keys nest ({"a.b": 1} -> {"a": {"b": 1}}).
-        `encoding` sends the body as "json", "form" (urlencoded) or "multipart" (text fields).
+        `encoding` sends the body as "json", "form" (urlencoded), "multipart" (text fields), "xml" (the body's one
+        top-level key is the root element; "@name" keys are attributes, "#text" the text, a list repeats the
+        element) or "soap" (that element inside a SOAP 1.1 envelope). XML responses come back as objects.
         Retried up to RETRIES times on timeout, network error, 5xx or 429, with jittered exponential backoff or
         after Retry-After when sent. 403 is never retried.
         """
@@ -190,6 +198,13 @@ class Api:
         elif encoding == "multipart":
             # shortcut: text fields only, no file upload; add (filename, bytes) parts when a plan needs one.
             send = {"files": [(k, (None, v)) for k, vs in _fields(payload).items() for v in vs]}
+        elif encoding in ("xml", "soap"):
+            send = {} if payload is None else {"content": _xml(payload, soap=encoding == "soap")}
+            if payload is not None and not any(k.lower() == "content-type" for k in headers):
+                headers["Content-Type"] = "text/xml; charset=utf-8" if encoding == "soap" else "application/xml"
+            for k, v in headers.items():  # SOAP 1.1 sends the action as a quoted string, "" when empty
+                if encoding == "soap" and k.lower() == "soapaction" and not v.startswith('"'):
+                    headers[k] = f'"{v}"'
         else:
             send = {"json": payload}
 
@@ -220,6 +235,9 @@ class Api:
         if session and r.status_code == 401:
             raise ApiError(f"The {host} sign-in has expired. {signin.LOGIN_HINT}", 401, expired=True)
         if r.status_code >= 300:
+            if _is_xml(r, content):
+                with suppress(ValueError):  # a SOAP Fault (usually HTTP 500) raises its own message
+                    _from_xml(content, host, r.status_code)
             raise ApiError(self._status_message(r, content, host, sent), r.status_code)
         if method != "GET":
             self._cache.clear()  # a write may change what any cached GET would return
@@ -230,8 +248,17 @@ class Api:
         try:
             data = json.loads(content)
         except ValueError:
-            text = content.decode("utf-8", "replace")
-            return {"text": text[: self.TEXT_CLIP] + ("...[cut]" if len(text) > self.TEXT_CLIP else "")}
+            data = None
+            if xml := _is_xml(r, content):
+                try:
+                    data = _from_xml(content, host, r.status_code)
+                except ValueError as e:
+                    if xml == "sure":
+                        raise ApiError(f"{host} sent XML that cannot be read ({e}).", r.status_code) from None
+                    xml = None  # only looked like XML: return it as text
+            if not xml:
+                text = content.decode("utf-8", "replace")
+                return {"text": text[: self.TEXT_CLIP] + ("...[cut]" if len(text) > self.TEXT_CLIP else "")}
         if session and (refused := signer.error(data)):  # an HTTP 200 carrying the service's own error
             raise ApiError(f"{host} refused the request ({refused})")
         if cached:
@@ -431,6 +458,107 @@ def _fields(payload: Any) -> dict[str, list[str]]:
     return {
         k: [_text(x) for x in v] if isinstance(v, list) else [_text(v)] for k, v in _flat("form", payload, True).items()
     }
+
+
+def _xml(payload: Any, soap: bool) -> bytes:
+    """The XML document (inside a SOAP 1.1 envelope when `soap`) of a body with exactly one root element."""
+    if not isinstance(payload, dict) or len(payload) != 1:
+        raise ApiError("An XML body needs exactly one root element; use body.<Root>.<field> targets.")
+    ((tag, value),) = payload.items()
+    root = _element(tag, value)
+    if soap:
+        envelope = ET.Element("soap:Envelope", {"xmlns:soap": SOAP_ENV})
+        ET.SubElement(envelope, "soap:Body").append(root)
+        root = envelope
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)  # ElementTree escapes text and attributes
+
+
+def _element(tag: str, value: Any) -> ET.Element:
+    """{"@a": 1, "#text": "t", "b": [1, 2]} -> <tag a="1">t<b>1</b><b>2</b></tag>."""
+    if not XML_NAME.fullmatch(tag):  # names may come from an object argument: never let them carry markup
+        raise ApiError(f"'{tag}' is not a valid XML element name.")
+    if isinstance(value, list):
+        raise ApiError(f"The XML element '{tag}' cannot hold a list of lists.")
+    el = ET.Element(tag)
+    if not isinstance(value, dict):
+        el.text = None if value is None else _text(value)
+        return el
+    for k, v in value.items():
+        if k.startswith("@"):
+            if not XML_NAME.fullmatch(k[1:]) or isinstance(v, dict | list):
+                raise ApiError(f"'{k}' in '{tag}' is not a valid XML attribute with a text value.")
+            el.set(k[1:], _text(v))
+        elif k == "#text":
+            el.text = _text(v)
+        else:
+            el.extend([_element(k, x) for x in (v if isinstance(v, list) else [v])])
+    return el
+
+
+def xml_root(content: bytes | str) -> ET.Element:
+    """Parse XML that declares no DTD (so no entity expansion); ValueError when it does or is malformed."""
+    if DTD.search(content.encode() if isinstance(content, str) else content):
+        raise ValueError("a DTD or entity declaration, refused")
+    try:
+        return ET.fromstring(content)
+    except ET.ParseError as e:
+        raise ValueError(f"malformed XML: {e}") from None
+
+
+def _is_xml(r: httpx.Response, content: bytes) -> str | None:
+    """'sure' for an XML content type or declaration, 'maybe' for other markup that is not HTML, else None."""
+    ctype, head = r.headers.get("content-type", "").lower(), content.lstrip()[:5].lower()
+    if "html" in ctype or head == b"<html":
+        return None
+    return "sure" if "xml" in ctype or head == b"<?xml" else "maybe" if head.startswith(b"<") else None
+
+
+def _local(tag: str) -> str:
+    return tag.rpartition("}")[2]
+
+
+def _object(el: ET.Element) -> Any:
+    """Namespaces stripped, attributes as '@name', repeated children as lists, '#text' only beside other values."""
+    out: dict[str, Any] = {f"@{_local(k)}": v for k, v in el.attrib.items()}
+    for child in el:
+        tag, value = _local(child.tag), _object(child)
+        if tag not in out:
+            out[tag] = value
+        elif isinstance(out[tag], list):
+            out[tag].append(value)
+        else:
+            out[tag] = [out[tag], value]
+    text = (el.text or "").strip()
+    if not out:
+        return el.text  # a leaf: its text (values stay strings; XML has no types)
+    if text:
+        out["#text"] = text
+    return out
+
+
+def _from_xml(content: bytes, host: str, status: int) -> Any:
+    """The root element's content; for a SOAP envelope the content of the Body's first child.
+    A SOAP Fault raises ApiError; a DTD or malformed XML raises ValueError."""
+    root = xml_root(content)
+    if _local(root.tag) != "Envelope" or root.tag[1:].partition("}")[0] not in (SOAP_ENV, SOAP12_ENV):
+        return _object(root)
+    body = next((c for c in root if _local(c.tag) == "Body"), None)
+    first = next(iter(body), None) if body is not None else None
+    if first is None:
+        return None
+    data = _object(first)
+    if _local(first.tag) == "Fault" and isinstance(data, dict):
+
+        def text(*path: str) -> str:
+            v = data
+            for p in path:
+                v = v.get(p) if isinstance(v, dict) else None
+            return str(v.get("#text", "") if isinstance(v, dict) else v or "")
+
+        code = text("faultcode") or text("Code", "Value")  # SOAP 1.1, else 1.2
+        reason = text("faultstring") or text("Reason", "Text")
+        raise ApiError(f"{host} returned a SOAP fault ({code}): {reason}"[:400], status)
+    return data
 
 
 def _origin(url: str) -> tuple[str, str, int | None]:

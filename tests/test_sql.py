@@ -15,7 +15,7 @@ from toolsmelt.importers import load
 from toolsmelt.model import Tool, ToolArg
 from toolsmelt.runtime import ApiError
 from toolsmelt.runtime.interpret import make_api, make_tool, run_tool, tool_spec
-from toolsmelt.runtime.sql import Db, connect_url, read_only_problem
+from toolsmelt.runtime.sql import Db, connect_url, is_dsn, read_only_problem
 
 sa = pytest.importorskip("sqlalchemy")
 pytestmark = pytest.mark.anyio
@@ -137,6 +137,27 @@ def test_read_only_rule():
     for bad in ("UPDATE t SET x = 1", "SELECT 1;SELECT 2", "SELECT 1 -- x", "SELECT $$a$$", "SELECT 'a\\' FROM t",
                 "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d", "SELECT * INTO t2 FROM t", "PRAGMA x"):  # fmt: skip
         assert read_only_problem(bad), bad
+
+
+def test_is_dsn_skips_non_database_schemes():
+    assert not is_dsn("grpc://localhost:50051") and not is_dsn("grpcs://api.test:443") and is_dsn("mysql://u@h/db")
+
+
+def test_mysql_session_mode_set_on_every_checkout():
+    # session-wide: DDL commits implicitly and escapes a one-transaction READ ONLY (checked on MariaDB 11.4)
+    import contextlib
+    from types import SimpleNamespace
+
+    from toolsmelt.runtime.sql import session
+
+    sent = []
+    conn = SimpleNamespace(exec_driver_sql=sent.append, in_transaction=lambda: False, commit=lambda: None)
+    for name in ("mysql", "mariadb"):
+        engine = SimpleNamespace(dialect=SimpleNamespace(name=name), connect=lambda: contextlib.nullcontext(conn))
+        for ro in (True, False):
+            with session(engine, ro, 30):
+                pass
+    assert sent == ["SET SESSION TRANSACTION READ ONLY", "SET SESSION TRANSACTION READ WRITE"] * 2
 
 
 def test_password_never_stored(monkeypatch):

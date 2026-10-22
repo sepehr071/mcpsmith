@@ -1,6 +1,6 @@
 [project]
 name = "toolsmelt"
-version = "0.7.0"
+version = "0.8.0"
 description = "Turn an API spec, a website, an app, a Postman collection or a database into curated, tested MCP tools, designed by an LLM."
 readme = "README.md"
 license = "MIT"
@@ -37,6 +37,8 @@ stealth = ["httpx-curl-cffi>=0.1.5", "curl-cffi>=0.16.3"]
 capture = ["playwright>=1.45"]
 # Database sources (`inspect sqlite:///shop.db`, postgresql://...): add the driver for your database, e.g. psycopg.
 sql = ["sqlalchemy>=2.0"]
+# gRPC services (`inspect grpc://host:port` through server reflection).
+grpc = ["grpcio>=1.60", "grpcio-reflection>=1.60", "protobuf>=4.25"]
 
 [project.urls]
 Homepage = "https://github.com/sepehr071/toolsmelt"

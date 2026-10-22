@@ -24,7 +24,9 @@ from .runtime import transforms
 ParamIn = Literal["path", "query", "header", "cookie", "body"]
 ArgType = Literal["string", "integer", "number", "boolean", "array", "object"]
 AuthType = Literal["bearer", "header", "query", "cookie", "basic", "browser", "signin"]
-BodyEncoding = Literal["json", "form", "multipart"]
+# xml: body.* as one XML document (the single top-level key is the root element); soap: the same inside a SOAP 1.1
+# envelope. XML responses (any API) come back parsed into objects.
+BodyEncoding = Literal["json", "form", "multipart", "xml", "soap"]
 SCHEMA_VERSION = 1  # plan.yaml format; raise it (and migrate in load_plan) when a change breaks old plans
 # Plan models refuse unknown keys: a typo such as 'readonly: false' must fail, not leave a write tool read-only.
 STRICT = ConfigDict(extra="forbid")
@@ -183,7 +185,9 @@ class Endpoint(BaseModel):
     params: list[Param] = []
     body_schema: dict[str, Any] | None = None
     body_example: Any = None
-    body_encoding: BodyEncoding = Field("json", description="How the request body is sent: JSON, form or multipart.")
+    body_encoding: BodyEncoding = Field(
+        "json", description="How the request body is sent: json, form, multipart, xml, soap."
+    )
     response_schema: dict[str, Any] | None = None
     response_example: Any = Field(None, description="A real (captured) or synthesized response body, trimmed.")
     auth: list[str] = Field([], description="AuthScheme names this endpoint needs.")
@@ -336,7 +340,9 @@ class Tool(BaseModel):
     args: list[ToolArg] = []
     fixed: dict[str, Any] = Field({}, description="Constant request values, same target syntax as ToolArg.to.")
     output: Output = Output()
-    body_encoding: BodyEncoding = Field("json", description="How body.* values are sent: json, form or multipart.")
+    body_encoding: BodyEncoding = Field(
+        "json", description="How body.* values are sent: json, form, multipart, xml or soap (an XML envelope)."
+    )
     paginate: Paginate | None = Field(None, description="Follow pages of the endpoint's list (see Paginate).")
     sql: str | None = Field(
         None, description="Database plans: one statement with :name placeholders, filled by args with to='sql.<name>'."

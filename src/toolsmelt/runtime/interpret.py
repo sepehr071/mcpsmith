@@ -14,6 +14,7 @@ from pydantic import Field
 
 from .. import browser
 from ..model import ARG_RESERVED, Plan, Source, Tool, ToolArg
+from .grpc import Grpc, is_grpc
 from .http import Api, ApiError
 from .shape import apply_transforms, get, shape
 from .sql import Db, is_dsn
@@ -68,7 +69,14 @@ def auth_env(plan: Plan) -> str | None:
 
 
 def api_kwargs(plan: Plan, source: Source | None) -> dict[str, Any]:
-    """The `Api(...)` keyword arguments for a plan (`Db(...)` for a database plan), in the order codegen writes them."""
+    """The `Api(...)` keyword arguments for a plan (`Db(...)` for a database plan, `Grpc(...)` for a gRPC one), in the
+    order codegen writes them."""
+    if is_grpc(plan.base_url):  # before is_dsn: grpc:// also looks like a database URL
+        kwargs = {"base_url": plan.base_url, "env_prefix": plan.env_prefix, "headers": plan.headers}
+        if plan.auth:
+            param = {"param": plan.auth.param} if plan.auth.param else {}
+            kwargs["auth"] = {"type": plan.auth.type, "env": auth_env(plan), **param}
+        return kwargs
     if is_dsn(plan.base_url):
         auth = {"auth": {"type": "basic", "env": auth_env(plan)}} if plan.auth else {}
         return {"base_url": plan.base_url, "env_prefix": plan.env_prefix, **auth}
@@ -94,7 +102,9 @@ def api_kwargs(plan: Plan, source: Source | None) -> dict[str, Any]:
 
 def make_api(
     plan: Plan, source: Source | None, *, proxy: str | None = None, cookie_provider=None, secret=None
-) -> Api | Db:
+) -> Api | Db | Grpc:
+    if is_grpc(plan.base_url):
+        return Grpc(**api_kwargs(plan, source), secret=secret, proxy=proxy)
     if is_dsn(plan.base_url):
         return Db(**api_kwargs(plan, source), secret=secret)
     extra: dict[str, Any] = {}
@@ -142,10 +152,11 @@ def _kwargs(name: str, pairs: list[tuple[str, Any]], encoding: str) -> dict[str,
     return out
 
 
-async def run_tool(api: Api | Db, spec: dict[str, Any], values: dict[str, Any], tz: str = "") -> Any:
+async def run_tool(api: Api | Db | Grpc, spec: dict[str, Any], values: dict[str, Any], tz: str = "") -> Any:
     """Call a tool: its own request (every page of it with `paginate`), then each step fed by the result before,
     then shape the last result with `output`. `values` maps every arg name to its value (None when unset).
-    A SQL tool runs its statement instead, with the sql.<name> values as parameters."""
+    A SQL tool runs its statement instead, with the sql.<name> values as parameters. A gRPC `api` takes the same
+    calls as HTTP: the method as url, body.* as the request message, header.* as metadata."""
     wire = {a["name"]: _value(a, values[a["name"]], tz) for a in spec["args"]}
     # an arg without a target feeds only steps ($arg.<name>), never the tool's own request
     pairs = [*((a["to"], wire[a["name"]]) for a in spec["args"] if a["to"]), *spec["fixed"].items()]
@@ -232,7 +243,7 @@ def _param(a: ToolArg) -> inspect.Parameter:
     )
 
 
-def make_tool(tool: Tool, plan: Plan, source: Source | None, api: Api) -> Callable[..., Awaitable[Any]]:
+def make_tool(tool: Tool, plan: Plan, source: Source | None, api: Api | Db | Grpc) -> Callable[..., Awaitable[Any]]:
     """An async function named `tool.name` with the generated one's signature; both run through `run_tool`."""
     spec = tool_spec(tool, plan, source)
     sig = inspect.Signature([_param(a) for a in sorted(tool.args, key=lambda a: not a.required)])

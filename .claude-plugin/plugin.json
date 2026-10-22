@@ -1,7 +1,7 @@
 {
   "name": "toolsmelt",
   "displayName": "toolsmelt",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Turn an OpenAPI file, a website, an app, a Postman collection or a database into curated, tested MCP tools. Skills and an MCP server for your coding agent.",
   "author": {
     "name": "Sepehr Radmard",
@@ -23,7 +23,7 @@
     "toolsmelt": {
       "command": "uvx",
       "args": [
-        "toolsmelt@0.7.0",
+        "toolsmelt@0.8.0",
         "mcp"
       ]
     },

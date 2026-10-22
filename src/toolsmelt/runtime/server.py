@@ -102,7 +102,8 @@ def run(mcp: MCPServer, argv: list[str] | None = None) -> None:
 
     Options: `--transport stdio|http`, `--host` (default 127.0.0.1), `--port` (default 8000); env `MCP_TRANSPORT`,
     `MCP_HOST`, `MCP_PORT` set the defaults. Unknown arguments are left alone. With env `MCP_AUTH_TOKEN` set, HTTP
-    clients must send `Authorization: Bearer <token>`.
+    clients must send `Authorization: Bearer <token>`. With `MCP_OAUTH_ISSUER` set instead, they must send a JWT from
+    that identity provider (see `oauth.py` for the other MCP_OAUTH_* variables).
     """
     p = argparse.ArgumentParser(prog=mcp.name, add_help=False, allow_abbrev=False)
     p.add_argument("--transport", default=os.environ.get("MCP_TRANSPORT") or "stdio")
@@ -115,6 +116,18 @@ def run(mcp: MCPServer, argv: list[str] | None = None) -> None:
         mcp.run()
         return
     token = os.environ.get("MCP_AUTH_TOKEN", "")
+    if token and os.environ.get("MCP_OAUTH_ISSUER"):
+        p.error("set MCP_AUTH_TOKEN or MCP_OAUTH_ISSUER, not both")
+    if os.environ.get("MCP_OAUTH_ISSUER"):
+        from .oauth import from_env
+
+        try:
+            # shortcut: sets the SDK's auth after construction (private _token_verifier); recheck on mcp upgrade.
+            mcp.settings.auth, mcp._token_verifier = from_env(args.host, args.port)
+        except ValueError as e:
+            p.error(str(e))
+        mcp.run("streamable-http", host=args.host, port=args.port)
+        return
     if token:
         import uvicorn  # a dependency of the mcp SDK's HTTP transport
 
@@ -124,7 +137,7 @@ def run(mcp: MCPServer, argv: list[str] | None = None) -> None:
     if args.host not in LOOPBACK:
         print(
             f"{mcp.name}: warning: serving on {args.host}:{args.port} with no authentication; anyone who can reach "
-            "it can call every tool (set MCP_AUTH_TOKEN to require a bearer token)",
+            "it can call every tool (set MCP_AUTH_TOKEN or MCP_OAUTH_ISSUER to require a bearer token)",
             file=sys.stderr,
         )
     mcp.run("streamable-http", host=args.host, port=args.port)

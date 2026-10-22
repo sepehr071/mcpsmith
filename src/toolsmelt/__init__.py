@@ -2,7 +2,7 @@
 
 import os
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 
 def getenv(name: str, default: str | None = None) -> str | None:
