@@ -453,7 +453,8 @@ def cmd_mcp(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="toolsmelt", description="Turn an OpenAPI file or a recorded website session into a curated MCP server."
+        prog="toolsmelt",
+        description="Turn an API spec, a website, an app, a database, a SOAP or a gRPC service into curated MCP tools.",
     )
     p.add_argument("--version", action="version", version=f"toolsmelt {__version__}")
     sub = p.add_subparsers(dest="command", required=True, metavar="command")
@@ -475,9 +476,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp = command(
         "inspect",
         cmd_inspect,
-        "read an OpenAPI file, HAR, Postman collection or cURL commands; write source.json and digest.md",
+        "read an OpenAPI file, HAR, Postman collection, cURL commands, WSDL, database URL or grpc:// URL; "
+        "write source.json and digest.md",
     )
-    sp.add_argument("source", help="OpenAPI/Swagger file, HAR or Postman collection (path or URL), or a cURL file")
+    sp.add_argument(
+        "source",
+        help="OpenAPI/Swagger, HAR, Postman or WSDL (path or URL), a cURL file, a database URL (sqlite:///x.db) "
+        "or grpc://host:port",
+    )
     sp.add_argument("--host", action="append", help="keep only traffic to this host (HAR; repeatable)")
     sp.add_argument("--budget", type=int, default=60000, help="digest size limit in characters (default 60000)")
 
