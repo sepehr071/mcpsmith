@@ -25,8 +25,13 @@ mcpsmith makes the curated server the default output:
 5. **Drift check.** `mcpsmith check <project>` calls every tool live with its example arguments and reports
    errors, output size and output fields that came back empty: run it nightly to see when a site changes.
 
-Non-goals (v0.1): running a browser per call, solving JS challenges/captchas, multi-call workflow tools
-in the plan (edit the generated code for those), non-Python output, a hosted service.
+Non-goals: running a browser per call, solving JS challenges/captchas, non-Python output, a hosted service.
+Multi-call tools are in scope since 0.6: `paginate` follows pages and `steps` chains requests (see the guide).
+
+One request path (0.6): a generated tool keeps its typed signature but its body only calls
+`mcpsmith.runtime.interpret.run_tool(api, spec, values, tz)` with a spec literal written by codegen, the same
+function the hub runs. Argument mapping, pagination, steps and SQL execution live in the runtime once, so the hub
+and exported servers cannot drift apart. Generated projects therefore depend on `mcpsmith>=0.6,<1`.
 
 ## Live hub
 

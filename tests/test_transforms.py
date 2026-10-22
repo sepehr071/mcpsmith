@@ -23,8 +23,41 @@ def test_unix():
     assert transform_in("jalali->unix_end", "1405/07/28", tz="Asia/Tehran") == start + 86399
     assert transform_in("date->unix", "2026-10-20", tz="UTC") == 1792454400
     assert transform_in("date->unix_end", "2026-10-20", tz="UTC") == 1792454400 + 86399
-    local = datetime.now().astimezone().tzinfo
-    assert transform_in("date->unix", "2026-10-20") == int(datetime(2026, 10, 20, tzinfo=local).timestamp())
+    # empty zone: the OS rules for that date (a naive datetime), not today's fixed offset
+    assert transform_in("date->unix", "2026-10-20") == int(datetime(2026, 10, 20).timestamp())
+    assert transform_in("date->unix", "2026-01-15") == int(datetime(2026, 1, 15).timestamp())
+    assert transform_out("unix->datetime", int(datetime(2026, 1, 15, 9, 30).timestamp())) == "2026-01-15 09:30"
+
+
+@pytest.mark.parametrize(
+    "day, hours, last",
+    [("2026-03-29", 23, "2026-03-29 23:59:59"), ("2026-10-25", 25, "2026-10-25 23:59:59"), ("2026-06-01", 24, None)],
+)
+def test_unix_end_on_dst_days(day, hours, last):
+    start = transform_in("date->unix", day, tz="Europe/Berlin")
+    end = transform_in("date->unix_end", day, tz="Europe/Berlin")
+    assert end - start + 1 == hours * 3600
+    local = datetime.fromtimestamp(end, ZoneInfo("Europe/Berlin")).strftime("%Y-%m-%d %H:%M:%S")
+    assert local == (last or f"{day} 23:59:59")
+
+
+def test_edge_numbers():
+    assert transform_out("minutes->hh:mm", -5) == "-00:05"
+    assert transform_out("minutes->hh:mm", -125) == "-02:05"
+    for bad in ("inf", "nan", "1e400", "-inf"):
+        with pytest.raises(ApiError, match="number"):
+            transform_in("toman->rial", bad)
+    with pytest.raises(ApiError, match="out of range"):
+        transform_in("date->unix_end", "9999-12-31", tz="UTC")
+
+
+def test_output_failure_keeps_value():
+    ms = 1792454400000  # milliseconds: OSError on Windows, ValueError elsewhere
+    assert transform_out("unix->date", ms, tz="UTC") == ms
+    assert transform_out("unix->date", "N/A") == "N/A"
+    assert transform_out("rial->toman", "inf") == "inf"
+    data = {"items": [{"t": 1792454400}, {"t": "N/A"}], "count": 2}
+    assert apply_transforms(data, {"t": "unix->date"}, "UTC")["items"] == [{"t": "2026-10-20"}, {"t": "N/A"}]
 
 
 def test_persian_digits_gregorian_and_number():

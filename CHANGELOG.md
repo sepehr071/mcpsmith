@@ -1,0 +1,72 @@
+# Changelog
+
+All notable changes to mcpsmith. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## 0.6.0 - 2026-10-22
+
+### Added
+
+- Plugins: third-party importers, value transforms and sign-in providers load from the entry-point groups
+  `mcpsmith.importers`, `mcpsmith.transforms` and `mcpsmith.signin` (see `docs/extending.md`). A broken plugin is
+  skipped with a warning.
+- `mcpsmith.scrub`: the scrubbing rules of the built-in importers, public for plugin importers.
+- Plan `schema_version` (now 1), and `mcpsmith schema`, which prints the plan's JSON Schema.
+- `body_encoding` (`json`, `form`, `multipart`) on tools and endpoints. The OpenAPI, Swagger 2, HAR and Retrofit
+  importers set it, and the runtime sends form and multipart text fields.
+- Each GraphQL operation in a HAR becomes its own endpoint (`POST /graphql#GetUser`).
+- `paginate` on a tool: page, offset, cursor or next-URL paging up to `max_pages`. The lists are joined, and the
+  result says when more pages exist.
+- `steps` on a tool: further requests fed by the arguments (`$arg.x`) or the previous result (`$prev.path`), with
+  `for_each` fan-out (`$item.path`, up to `max_items`). An argument used only by steps may omit `to`.
+- New input formats: Postman collections (v2.0/v2.1) and cURL commands (DevTools "Copy as cURL").
+- Databases (`mcpsmith[sql]`): `inspect sqlite:///...` or `postgresql://...` reads the schema and masked sample rows.
+  Tools carry a `sql` statement with `:name` args (`to: sql.<name>`). Read-only tools must be a single SELECT,
+  checked at validate and at run time, and SQLite and PostgreSQL connect read-only. The password comes from
+  `<P>_DB_PASSWORD` or the keychain.
+- `mcpsmith eval`: writes `evals.yaml` (questions per tool, plus negatives) and scores whether an LLM picks the right
+  tool and arguments, with `--json`, `--min` for CI, and prompt caching of the tool list.
+- Streamable HTTP: generated servers and `mcpsmith mcp` accept `--transport http --host --port` (or `MCP_TRANSPORT`,
+  `MCP_HOST`, `MCP_PORT`). The default stays stdio. With `MCP_AUTH_TOKEN` set, every HTTP request needs
+  `Authorization: Bearer <token>`. Without it, a public bind address prints a no-auth warning.
+- `mcpsmith --version`.
+
+### Changed
+
+- Unknown keys in a plan are errors. A typo such as `readonly: false` used to be ignored and left a write tool
+  read-only.
+- A POST tool in a plan with `schema_version` must set `read_only` explicitly. Plans without it only get a warning,
+  so saved connections keep loading.
+- The hub validates saved connections when it loads them and skips one with errors.
+- `smith_call` validates arguments like the real tool does (enum, map, bounds, types).
+- `smith_tools` returns `{instructions, tools}`, and `smith_install` makes a dry run unless `dry_run=false`.
+- Generated projects: each tool's body calls `mcpsmith.runtime.interpret.run_tool`, the same code the hub runs, so
+  they depend on `mcpsmith>=0.6,<1`. `-m live` tests cover read-only tools only, and `generate --force` removes
+  stale generated files.
+- `check` skips tools whose required arguments have no example, instead of calling them with `{}`.
+- Drafts skip binary-body endpoints (with a note), drop secret-looking output fields and keep map-shaped responses
+  whole.
+- `smith_record_start` refuses an empty host list. The recorder stores bodies of XHR and fetch requests only, and
+  keeps the auth scheme word (`Bearer <dropped>`).
+
+### Fixed
+
+- An empty path value no longer turns `/items/{id}` into `/items/`.
+- Credentials go only to the base URL's scheme, host and port.
+- A write clears the GET cache.
+- Header and cookie values are sent as text. An object sent to a query, header or cookie is a clear error.
+- Redirect errors no longer show the query of the `Location` header.
+- A Referer or Origin path no longer reaches static headers.
+- The scrubber catches names such as `clientsecret`, `appkey` and `passphrase`, name/value pairs, and personal data
+  in dict keys.
+- jadx gets a copy of the APK named by its hash, so a file name cannot inject commands on Windows.
+- Large, deeply linked or cyclic OpenAPI specs import quickly, with a capped `$ref` depth.
+- External `$ref`s, unsupported auth schemes and host-less base URLs are noted instead of dropped silently.
+- HAR imports keep non-GET calls that return no JSON (for example a DELETE with 204).
+- Malformed input gives a `ValueError` that names the file, not a traceback.
+- Date transforms are correct on daylight-saving days and use the system zone's rules. An output transform that
+  fails on one value keeps that value instead of failing the call.
+
+## 0.5.0 - 2026-10-22
+
+Sign-in auth (`auth: signin`, Mi Home provider), `mcpsmith install`, the jadx CLI for `app-android`, APK triage
+before decompiling, and REA as an opt-in (`setup --rea`).

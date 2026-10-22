@@ -1,9 +1,8 @@
 """Sign-in auth for apps that sign their own requests: the user signs in on the provider's own page, the session is
 kept in the OS keychain, and the provider signs (and may encrypt) every call.
 
-A provider is a module with: TITLE, ACCOUNT (who should sign in), USER_AGENT, HEADERS, TEST_SESSION, session_of(raw),
-cookies(session), encrypt(url, session, payload) -> (form, key), decrypt(key, content), error(data),
-fake_reply(request, body), start_login(client), finish_login(client, poll) and whoami(client, session).
+A provider is a module (or object) implementing `Provider` below; `xiaomi.py` is the reference. Built-ins are listed in
+`_BUILTIN`; installed packages add more through the `mcpsmith.signin` entry point group (see docs/extending.md).
 """
 
 from __future__ import annotations
@@ -12,28 +11,87 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable
-from types import ModuleType
-from typing import TYPE_CHECKING, Any
+from functools import cache
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import httpx
 from mcp.server.mcpserver.exceptions import ToolError
 
-from ... import secrets
+from ... import plugins, secrets
 from . import xiaomi
 
 if TYPE_CHECKING:
     from ..http import Api
 
+
+@runtime_checkable
+class Provider(Protocol):
+    """What a sign-in provider offers. The session is the dict `session_of` builds from the keychain JSON."""
+
+    TITLE: str  # service name shown to the user, e.g. "Xiaomi"
+    ACCOUNT: str  # who should sign in, e.g. "the Xiaomi account their Mi Home app uses"
+    USER_AGENT: str
+    HEADERS: dict[str, str]  # sent with every signed call
+    TEST_SESSION: dict[str, str]  # a session that `fake_reply` accepts, for tests
+    LOGIN_MINUTES: int  # how long a sign-in link stays valid
+
+    def session_of(self, raw: str) -> dict[str, str]:
+        """Parse the saved session; ValueError when it is empty or incomplete."""
+
+    def cookies(self, session: dict[str, str]) -> dict[str, str]: ...
+
+    def encrypt(self, url: str, session: dict[str, str], payload: Any) -> tuple[dict[str, str], bytes]:
+        """Sign (and maybe encrypt) a call: the form to send and the key `decrypt` needs."""
+
+    def decrypt(self, key: bytes, content: bytes) -> bytes: ...
+
+    def error(self, data: Any) -> str | None:
+        """The service's error message in a decoded reply, or None."""
+
+    def fake_reply(self, request: httpx.Request, body: Any) -> httpx.Response:
+        """For tests: `body` signed or encrypted for `request` as the real service would."""
+
+    async def start_login(self, client: httpx.AsyncClient) -> tuple[str, str]:
+        """(link for the user, poll handle for `finish_login`)."""
+
+    async def finish_login(self, client: httpx.AsyncClient, poll: str) -> dict[str, str]:
+        """Wait for the user to sign in; return the session to save."""
+
+    async def whoami(self, client: httpx.AsyncClient, session: dict[str, str]) -> dict[str, Any] | None:
+        """Who is signed in, with `found`: {region: {"base_url": ...}}; None when the session is no longer valid."""
+
+
 log = logging.getLogger("mcpsmith")
-PROVIDERS: dict[str, ModuleType] = {"xiaomi": xiaomi}
+_BUILTIN: dict[str, Provider] = {"xiaomi": xiaomi}
 LOGIN_HINT = "Call this server's *_login tool (smith_login in the mcpsmith hub) and give the user its link."
 _logins: dict[str, asyncio.Task] = {}  # sign-ins waiting for the user, by keychain name
 
 
-def provider(name: str) -> ModuleType:
-    if name not in PROVIDERS:
-        raise ValueError(f"unknown sign-in provider {name!r}; use one of {sorted(PROVIDERS)}")
-    return PROVIDERS[name]
+@cache
+def _providers() -> dict[str, Provider]:
+    found: dict[str, Provider] = {}
+    for name, obj in plugins.load("mcpsmith.signin").items():
+        if name in _BUILTIN:
+            plugins.skip("mcpsmith.signin", name, "a built-in provider has that name")
+        elif not isinstance(obj, Provider):
+            plugins.skip("mcpsmith.signin", name, "it does not implement the Provider interface")
+        else:
+            found[name] = obj
+    return {**_BUILTIN, **found}
+
+
+def __getattr__(name: str) -> dict[str, Provider]:
+    # PROVIDERS is computed on first use: http imports this package, and a plugin may import http while it loads.
+    if name == "PROVIDERS":
+        return _providers()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def provider(name: str) -> Provider:
+    providers = _providers()
+    if name not in providers:
+        raise ValueError(f"unknown sign-in provider {name!r}; use one of {sorted(providers)}")
+    return providers[name]
 
 
 def keychain(name: str) -> Callable[[str], str | None]:
@@ -51,7 +109,7 @@ def fake_reply(name: str, request: httpx.Request, body: Any) -> httpx.Response:
     return provider(name).fake_reply(request, body)
 
 
-def _client(api: Api, p: ModuleType) -> httpx.AsyncClient:
+def _client(api: Api, p: Provider) -> httpx.AsyncClient:
     from ..http import tls_context  # http imports this package
 
     return httpx.AsyncClient(
@@ -64,7 +122,7 @@ def _client(api: Api, p: ModuleType) -> httpx.AsyncClient:
     )
 
 
-async def _status(api: Api, p: ModuleType, env: str) -> dict[str, Any] | None:
+async def _status(api: Api, p: Provider, env: str) -> dict[str, Any] | None:
     """Who is signed in and where their data is, or None when there is no valid session."""
     try:
         session = p.session_of(api._credential(env))

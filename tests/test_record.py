@@ -85,7 +85,7 @@ async def test_big_response_has_no_body_and_second_start_fails(hub_home):
     with FakeCdp({"Network.getResponseBody": body_for}) as fake:
         (hub_home / "browser.json").write_text(json.dumps({"port": fake.port, "proxy": None}))
         rec = Recorder()
-        await rec.start("big", [])
+        await rec.start("big", ["shop.test"])
         with pytest.raises(RuntimeError, match="already recording"):
             await rec.start("other", [])
         fake.emit("Target.attachedToTarget", {"sessionId": "s1", "targetInfo": {"type": "page", "targetId": "t"}})
@@ -102,8 +102,16 @@ async def test_big_response_has_no_body_and_second_start_fails(hub_home):
 @pytest.mark.anyio
 async def test_start_without_chrome():
     with pytest.raises(RuntimeError, match="mcpsmith browser"):
-        await Recorder().start("x", [])
+        await Recorder().start("x", ["shop.test"])
     assert browser.status() is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("hosts", [[], [""], [" . "]])
+async def test_no_hosts_is_refused(hosts):
+    # without a host filter every site open in the shared Chrome would be recorded
+    with pytest.raises(ValueError, match="at least one site"):
+        await Recorder().start("x", hosts)
 
 
 @pytest.mark.anyio
@@ -151,17 +159,41 @@ async def test_custom_secret_headers_and_query_values_are_dropped(hub_home):
     with FakeCdp({"Network.getResponseBody": body_for}) as fake:
         (hub_home / "browser.json").write_text(json.dumps({"port": fake.port, "proxy": None}))
         rec = Recorder()
-        await rec.start("shop", [])
+        await rec.start("shop", ["shop.test"])
         fake.emit("Target.attachedToTarget", {"sessionId": "s1", "targetInfo": {"type": "page", "targetId": "t"}})
         await until(lambda: ("Network.enable", {}, "s1") in fake.calls)
         sent(
             fake,
             "1",
             "https://api.shop.test/s?api_key=AKEY123&access_token=ATOK456&q=shoes",
-            headers={"X-Api-Key": "HKEY789", "Accept": "application/json"},
+            headers={"X-Api-Key": "HKEY789", "Accept": "application/json", "Authorization": "Bearer BTOK321"},
         )
         done(fake, "1")
         await until(lambda: sum("body" in e for e in rec.entries.values()) == 1)
-        text = (await rec.stop()).read_text()
-    assert not any(s in text for s in ("AKEY123", "ATOK456", "HKEY789"))
+        har_path = await rec.stop()
+    text = har_path.read_text()
+    assert not any(s in text for s in ("AKEY123", "ATOK456", "HKEY789", "BTOK321"))
     assert "q=shoes" in text
+    # the scheme word survives, so the importer still sees bearer auth
+    assert "Bearer <dropped>" in text and "bearer" in [a.type for a in importers.load(str(har_path)).auth]
+
+
+@pytest.mark.anyio
+async def test_only_api_call_bodies_are_fetched(hub_home):
+    with FakeCdp({"Network.getResponseBody": body_for}) as fake:
+        (hub_home / "browser.json").write_text(json.dumps({"port": fake.port, "proxy": None}))
+        rec = Recorder()
+        await rec.start("shop", ["shop.test"])
+        fake.emit("Target.attachedToTarget", {"sessionId": "s1", "targetInfo": {"type": "page", "targetId": "t"}})
+        await until(lambda: ("Network.enable", {}, "s1") in fake.calls)
+        page = {"url": "https://shop.test/account", "method": "GET", "headers": {}}
+        fake.emit("Network.requestWillBeSent", {"requestId": "d", "request": page, "type": "Document"}, "s1")
+        resp = {"status": 200, "statusText": "OK", "mimeType": "text/html", "headers": {}}
+        fake.emit("Network.responseReceived", {"requestId": "d", "response": resp, "type": "Document"}, "s1")
+        fake.emit("Network.loadingFinished", {"requestId": "d", "encodedDataLength": 10}, "s1")
+        sent(fake, "x", "https://api.shop.test/items")
+        done(fake, "x")
+        await until(lambda: "body" in rec.entries.get(("s1", "x"), {}))
+        await rec.stop()
+    # the HTML page (names, addresses, codes the scrubber cannot see) is never fetched
+    assert [c[1]["requestId"] for c in fake.calls if c[0] == "Network.getResponseBody"] == ["x"]

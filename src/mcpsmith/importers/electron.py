@@ -31,6 +31,12 @@ AXIOS = re.compile(r"(?<![\w$])axios\.(get|post|put|patch|delete|head|options)\s
 METHOD_KEY = re.compile(r"""(?<![\w$])['"]?method['"]?\s*:\s*(['"`])([A-Za-z]+)\1""")
 HEADERS_KEY = re.compile(r"\bheaders\s*:\s*\{")
 HEADER_PAIR = re.compile(r"""(?:(['"])([\w-]+)\1|([\w-]+))\s*:\s*(['"])((?:\\.|(?!\4).)*)\4""")
+# A literal header or query value from app code is kept only under one of these names: any other may be a key the
+# app ships, whatever it is called.
+HARMLESS = {
+    *"accept content-type accept-language x-requested-with version api-version x-api-version".split(),
+    *"v format lang locale page limit per_page sort order".split(),
+}
 
 
 # shortcut: a comment is only recognised after whitespace, so "http://" and "**/*.js" in strings survive; a comment
@@ -361,7 +367,7 @@ def _endpoint(
         if _is_credential(k):
             credential(k, "query")
         else:
-            params.append(Param(name=k, location="query", example=_scrub(v, k) if v and "{" not in v else None))
+            params.append(Param(name=k, location="query", example=_literal(k, v) if "{" not in v else None))
     joined = ",".join(rest)
     for hm in HEADERS_KEY.finditer(joined):
         try:
@@ -373,7 +379,7 @@ def _endpoint(
             if k.lower() == "authorization" or _is_credential(k):
                 credential(k)
             else:
-                params.append(Param(name=k, location="header", example=_scrub(v, k)))
+                params.append(Param(name=k, location="header", example=_literal(k, v)))
     return Endpoint(
         id="",
         method=method or "",
@@ -386,6 +392,10 @@ def _endpoint(
         count=0,
         verified=False,
     )
+
+
+def _literal(name: str, value: str) -> str | None:
+    return _scrub(value, name) if value and name.lower() in HARMLESS else None
 
 
 def _blank_comments(text: str) -> str:

@@ -65,7 +65,9 @@ async def test_connect_lists_and_calls(tmp_path, hub):
         assert direct.content[0].text == got.content[0].text
         conns = json.loads((await c.call_tool("smith_connections", {})).content[0].text)
         assert conns[0]["name"] == "demo-mcp" and conns[0]["ok"] and conns[0]["auth"] == "bearer"
-        tools = json.loads((await c.call_tool("smith_tools", {"connection": "demo-mcp"})).content[0].text)
+        listed = json.loads((await c.call_tool("smith_tools", {"connection": "demo-mcp"})).content[0].text)
+        assert listed["instructions"] == PLAN.instructions  # what an exported server would announce
+        tools = listed["tools"]
         assert [t["read_only"] for t in tools] == [True, True, False]
         assert "title" not in json.dumps(tools[0]["input_schema"])
 
@@ -78,6 +80,31 @@ async def test_write_tool_refused_by_smith_call(tmp_path, hub):
         await hub.call("demo-mcp", "nope", {})
     with pytest.raises(ToolError, match="unknown"):
         await hub.call("nope", "demo_item", {})
+
+
+async def test_smith_call_validates_args_like_the_tool(tmp_path, hub):
+    hub.connect(workdir(tmp_path))
+    seen = []
+    hub._conns["demo-mcp"].api.set_transport(httpx.MockTransport(lambda r: seen.append(r) or upstream(r)))
+    for bad in ({"query": "x", "sort": "DROP"}, {"query": "x", "limit": 10_000}, {"limit": 5}):
+        with pytest.raises(ToolError, match="bad arguments"):
+            await hub.call("demo-mcp", "demo_search", bad)
+    assert seen == []
+    await hub.call("demo-mcp", "demo_search", {"query": "x", "sort": "cheap", "limit": "5"})
+    assert seen[0].url.params["sort"] == "price_asc" and seen[0].url.params["size"] == "5"
+
+
+async def test_load_all_skips_plan_edited_into_errors(tmp_path, monkeypatch):
+    monkeypatch.setenv("OTHER_SERVICE_API_KEY", "sk-not-for-this-site")
+    Hub(MCPServer("a")).connect(workdir(tmp_path))
+    saved = tmp_path / "home" / "connections" / "demo-mcp" / "plan.yaml"
+    other = AuthScheme(name="token", type="bearer", env="OTHER_SERVICE_API_KEY")
+    save_plan(PLAN.model_copy(update={"auth": other}), saved)
+    m = MCPServer("b")
+    h = Hub(m)
+    warnings = h.load_all()
+    assert len(warnings) == 1 and "demo-mcp" in warnings[0] and "must start with" in warnings[0]
+    assert m._tool_manager.list_tools() == [] and not h.connections()[0]["ok"]
 
 
 async def test_clash_names_tool_and_keeps_first(tmp_path, hub):

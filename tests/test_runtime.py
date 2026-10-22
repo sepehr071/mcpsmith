@@ -393,6 +393,120 @@ def test_nest_builds_lists_from_index_keys():
     assert http._nest(body) == {"method": "set_bright", "params": [50, "smooth"], "a": {"1": "x"}, "keep": {"0": 1}}
 
 
+def test_nest_clash_names_both_keys():
+    with pytest.raises(ApiError, match="'a' and 'a.b' clash"):
+        http._nest({"a": 1, "a.b": 2})
+    with pytest.raises(ApiError, match="'a.b' and 'a' clash"):
+        http._nest({"a.b": 2, "a": 1})
+
+
+async def test_form_and_multipart_bodies():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    api = make_api(handler)
+    body = {"a.b": None, "name": "چای سبز", "n": 5, "ok": True, "tag": ["x", "y"]}
+    await api.call("POST", "/f", body=body, encoding="form")
+    assert seen[0].headers["content-type"] == "application/x-www-form-urlencoded"
+    assert parse_qsl(seen[0].content.decode()) == [
+        ("name", "چای سبز"),
+        ("n", "5"),
+        ("ok", "true"),
+        ("tag", "x"),
+        ("tag", "y"),
+    ]
+    await api.call("POST", "/m", body={"name": "x", "n": 5}, encoding="multipart")
+    assert seen[1].headers["content-type"].startswith("multipart/form-data; boundary=")
+    assert b'name="name"\r\n\r\nx\r\n' in seen[1].content and b'name="n"\r\n\r\n5\r\n' in seen[1].content
+    for encoding in ("form", "multipart"):
+        with pytest.raises(ApiError, match="form value 'a' must be text"):
+            await api.call("POST", "/f", body={"a.b": 1}, encoding=encoding)
+        with pytest.raises(ApiError, match="must be an object of fields"):
+            await api.call("POST", "/f", body=[1], encoding=encoding)
+    assert len(seen) == 2
+
+
+async def test_empty_path_value_refused():
+    api = make_api(lambda r: httpx.Response(200, json={}))
+    with pytest.raises(ApiError, match="Missing value for path parameter 'id'"):
+        await api.call("DELETE", "/items/{id}", path={"id": ""})
+
+
+@pytest.mark.parametrize(
+    ("url", "has"),
+    [
+        ("/x", True),
+        ("https://api.example.com:443/x", True),
+        ("http://api.example.com/x", False),
+        ("https://api.example.com:9999/x", False),
+    ],
+)
+async def test_credential_only_to_base_origin(monkeypatch, url, has):
+    monkeypatch.setenv("EX_MCP_KEY", "secret")
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    await make_api(handler, auth={"type": "bearer", "env": "EX_MCP_KEY"}).call("GET", url)
+    assert ("authorization" in seen[0].headers) is has
+
+
+async def test_write_clears_get_cache():
+    items = []
+
+    def handler(request):
+        if request.method == "POST":
+            items.append(1)
+        return httpx.Response(200, json={"items": len(items)})
+
+    api = make_api(handler)
+    assert await api.call("GET", "/items") == {"items": 0}
+    await api.call("POST", "/items", body={"a": 1})
+    assert await api.call("GET", "/items") == {"items": 1}
+
+
+async def test_header_and_cookie_values_stringified_objects_refused():
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, json={})
+
+    api = make_api(handler)
+    await api.call("GET", "/x", headers={"X-Page": 2, "X-On": True}, cookies={"n": 3})
+    assert seen[0].headers["x-page"] == "2" and seen[0].headers["x-on"] == "true" and seen[0].headers["cookie"] == "n=3"
+    bad = [
+        ({"query": {"f": {"a": 1}}}, "query"),
+        ({"headers": {"X": [1]}}, "header"),
+        ({"cookies": {"c": {}}}, "cookie"),
+    ]
+    for kw, kind in bad:
+        with pytest.raises(ApiError, match=f"The {kind} value"):
+            await api.call("GET", "/x", **kw)
+    await api.call("GET", "/x", query={"tag": ["a", "b"]})  # a list repeats a query key
+    assert seen[-1].url.query == b"tag=a&tag=b"
+
+
+async def test_redirect_message_hides_query():
+    api = make_api(lambda r: httpx.Response(302, headers={"location": "https://u:p@sso.example.com/cb?code=SECRET#t"}))
+    with pytest.raises(ApiError, match="to https://sso.example.com/cb; not followed") as e:
+        await api.call("GET", "/x")
+    assert "SECRET" not in str(e.value) and "u:p" not in str(e.value)
+
+
+def test_build_server_quiets_httpx_logging():
+    import logging
+
+    logging.getLogger("httpx").setLevel(logging.NOTSET)
+    build_server("ex-mcp", registry=Registry())
+    assert logging.getLogger("httpx").level == logging.WARNING
+
+
 XIAOMI_SESSION = {"userId": "42", "ssecurity": base64.b64encode(b"s" * 16).decode(), "serviceToken": "tok"}
 
 

@@ -7,6 +7,7 @@ import keyword
 import re
 from typing import Any
 
+from ..importers.har import _is_secret
 from ..model import (
     ARG_RESERVED,
     TARGET,
@@ -21,7 +22,7 @@ from ..model import (
     ToolArg,
 )
 from ._digest import list_paths
-from ._validate import resolve
+from ._validate import NO_WIRE_FORM, resolve
 
 GENERIC = {"api", "apis", "the", "swagger", "openapi", "rest", "service", "www", "com", "org", "net", "io", "ir"}
 NOISE = {
@@ -32,6 +33,7 @@ NOISE = {
 VERBS = {"GET": "get", "POST": "create", "PUT": "update", "PATCH": "update", "DELETE": "delete"}
 TYPES = {bool: "boolean", int: "integer", float: "number", str: "string", list: "array", dict: "object"}
 MAX_TOOLS = 25
+SQL_TOOLS = 15
 
 
 def _words(text: str) -> list[str]:
@@ -63,6 +65,8 @@ def _ident(name: str, taken: set[str]) -> str:
 def _tool_name(e: Endpoint, prefix: str, taken: set[str]) -> str:
     if " " not in e.id:  # an operationId
         words = _words(e.id)
+    elif "#" in e.id:  # a GraphQL operation from captured traffic: 'POST /graphql#GetUser'
+        words = _words(e.id.partition("#")[2])
     else:
         path = [
             w for w in _words(re.sub(r"\{[^}]*\}", "", e.path)) if w not in GENERIC and not re.fullmatch(r"v\d+", w)
@@ -107,13 +111,29 @@ def _fields(item: Any) -> dict[str, str]:
     """Up to 12 scalar leaves of one response item, one level of nesting included."""
     if not isinstance(item, dict):
         return {}
-    out = {_snake(k) or k: k for k, v in item.items() if _scalar(v) and "." not in k}
+    out = {_snake(k) or k: k for k, v in item.items() if _scalar(v) and "." not in k and not _is_secret(k)}
     for k, v in item.items():
-        if isinstance(v, dict) and "." not in k:
+        if isinstance(v, dict) and "." not in k and not _is_secret(k):
             for k2, v2 in v.items():
-                if _scalar(v2) and "." not in k2:
+                if _scalar(v2) and "." not in k2 and not _is_secret(k2):
                     out.setdefault(_snake(f"{k} {k2}"), f"{k}.{k2}")
     return dict(list(out.items())[:12])
+
+
+def _is_map(e: Endpoint) -> bool:
+    """A response keyed by data (ids, names), not by field names: fixed `fields` would pick nothing."""
+    s, ex = e.response_schema or {}, e.response_example
+    by_schema = isinstance(s.get("additionalProperties"), dict) and not s.get("properties")
+    return by_schema or (isinstance(ex, dict) and len(ex) > 1 and all(k.isdigit() for k in ex))
+
+
+def _skip_reason(e: Endpoint) -> str | None:
+    """Why an endpoint cannot be drafted as a tool, or None."""
+    if (e.body_schema or {}).get("format") == "binary":
+        return "its request body is binary (a file or octet-stream), which a JSON tool argument cannot carry"
+    if e.body_encoding != "json" and e.body_example is not None and not isinstance(e.body_example, dict):
+        return f"its {e.body_encoding} body is not a set of named fields"
+    return None
 
 
 def _output(example: Any) -> Output:
@@ -145,6 +165,8 @@ def _args(e: Endpoint) -> tuple[list[ToolArg], dict[str, Any]]:
         to = f"{p.location}.{p.name}"
         if not TARGET.fullmatch(to):
             continue  # shortcut: wire names with dots/spaces have no target syntax; the LLM or developer maps them
+        if p.location in NO_WIRE_FORM.get(p.type, ()) or (p.location == "path" and f"{{{p.name}}}" not in e.path):
+            continue  # no wire form there (validate refuses it), or a path param the template does not use
         required = p.required or p.location == "path"
         name = _ident(p.name, taken)
         sample = _sample(p)
@@ -178,6 +200,85 @@ def _args(e: Endpoint) -> tuple[list[ToolArg], dict[str, Any]]:
     return args, example
 
 
+def _quote(name: str, mysql: bool) -> str:
+    """A table or column name quoted for SQL, so mixed case and reserved words ('order') work."""
+    return f"`{name.replace('`', '``')}`" if mysql else '"' + name.replace('"', '""') + '"'
+
+
+def _unique(base: str, taken: set[str]) -> str:
+    base = base[:64].rstrip("_")
+    out, n = base, 2
+    while out in taken:
+        out, n = f"{base[:60]}_{n}", n + 1
+    taken.add(out)
+    return out
+
+
+def _sql_tools(source: Source, prefix: str) -> list[Tool]:
+    """Per table, biggest first: a list tool (equality filters on key and indexed columns, a row limit) and a
+    get-by-primary-key tool."""
+    mysql = source.base_url.startswith(("mysql", "mariadb"))
+    tools: list[Tool] = []
+    taken: set[str] = set()
+    for e in sorted(source.endpoints, key=lambda e: -e.count):
+        if len(tools) >= SQL_TOOLS:
+            break
+        table = ".".join(_quote(n, mysql) for n in [*e.tags[:1], e.path])
+        rows = e.response_example if isinstance(e.response_example, list) else []
+        row = rows[0] if rows and isinstance(rows[0], dict) else {}
+        pk = [p for p in e.params if "primary key" in p.description]
+        # the primary key is the get tool's argument, so the list filters on the other keys
+        keys = [p for p in e.params if p not in pk and re.search(r"references |\bunique\b|\bindexed\b", p.description)]
+        noun = _snake(e.path) or "rows"
+        names: set[str] = set()
+        args, where = [], []
+        for p in keys[:4]:
+            name = _ident(p.name, names)
+            eg = f", e.g. {row[p.name]!r}" if row.get(p.name) is not None else ""
+            desc = f"Only rows whose {p.name} ({p.description.split(',')[0]}) equals this{eg}."
+            args.append(ToolArg(name=name, type=p.type, description=desc, to=f"sql.{name}"))
+            # column first: PostgreSQL infers the parameter's type from it ('$1 IS NULL' alone has no type)
+            where.append(f"({_quote(p.name, mysql)} = :{name} OR :{name} IS NULL)")
+        limit = _ident("limit", names)
+        args.append(
+            ToolArg(
+                name=limit, type="integer", description="Most rows to return, e.g. 20.", default=20, minimum=1,
+                maximum=100, to=f"sql.{limit}",
+            )
+        )  # fmt: skip
+        cols = ", ".join(_quote(p.name, mysql) for p in e.params[:15]) or "*"
+        order = f" ORDER BY {', '.join(_quote(p.name, mysql) for p in pk)}" if pk else ""
+        # shortcut: LIMIT is not SQL Server or Oracle syntax; edit those statements to TOP / FETCH FIRST
+        sql = f"SELECT {cols} FROM {table}" + (f" WHERE {' AND '.join(where)}" if where else "") + order
+        list_name = _unique(f"{prefix}_list_{noun}", taken)
+        get_name = f"{prefix}_get_{noun}_by_{'_'.join(_snake(p.name) for p in pk)}" if pk else ""
+        more = f"\nPass a row's {', '.join(p.name for p in pk)} to {get_name} for every column." if pk else ""
+        tools.append(
+            Tool(
+                name=list_name, title=f"List {e.path}"[:80], endpoint=e.id, args=args, sql=f"{sql} LIMIT :{limit}",
+                description=f"Rows of {e.path} with {', '.join(p.name for p in e.params[:15])}.{more}",
+                read_only=True, example={limit: 5},
+            )
+        )  # fmt: skip
+        if pk and len(tools) < SQL_TOOLS:
+            names = set()
+            pk_args = [
+                ToolArg(name=(n := _ident(p.name, names)), type=p.type, required=True, to=f"sql.{n}",
+                        description=f"The row's {p.name} ({p.description.split(',')[0]}), from {list_name}.")
+                for p in pk
+            ]  # fmt: skip
+            match = " AND ".join(f"{_quote(p.name, mysql)} = :{a.name}" for p, a in zip(pk, pk_args, strict=True))
+            tools.append(
+                Tool(
+                    name=_unique(get_name, taken), title=f"Get {e.path} row"[:80], endpoint=e.id, args=pk_args,
+                    description=f"One row of {e.path} by {', '.join(p.name for p in pk)}, with every column.",
+                    sql=f"SELECT * FROM {table} WHERE {match}", output=Output(root="0"), read_only=True,
+                    example={a.name: row[p.name] for p, a in zip(pk, pk_args, strict=True) if p.name in row},
+                )
+            )  # fmt: skip
+    return tools
+
+
 def _auth(source: Source, env_prefix: str) -> AuthScheme | None:
     used = {a for e in source.endpoints for a in e.auth}
     schemes = sorted(source.auth, key=lambda a: a.name not in used)
@@ -185,10 +286,12 @@ def _auth(source: Source, env_prefix: str) -> AuthScheme | None:
         return None
     a = schemes[0]
     label = {"bearer": "TOKEN", "basic": "CREDENTIALS"}.get(a.type) or _snake(a.param or a.name).upper() or "KEY"
+    label = "DB_PASSWORD" if source.kind == "sql" else label
     return a.model_copy(update={"env": a.env or f"{env_prefix}_{label}"})
 
 
-def draft(source: Source, name: str | None = None) -> Plan:
+def draft(source: Source, name: str | None = None, notes: list[str] | None = None) -> Plan:
+    """A starting plan; endpoints it cannot turn into a tool are left out, with the reason appended to `notes`."""
     words = [w for w in _words(source.title) if w not in GENERIC and not re.fullmatch(r"v?\d+", w)] or ["api"]
     if not words[0][0].isalpha():  # the package name must be a Python identifier
         words.insert(0, "api")
@@ -199,13 +302,19 @@ def draft(source: Source, name: str | None = None) -> Plan:
     if not env_prefix[:1].isalpha():
         env_prefix = "MCP_" + env_prefix
 
-    eps = [e for e in source.endpoints if not _is_noise(e)]
+    eps = []
+    for e in source.endpoints:
+        if (reason := _skip_reason(e)) and notes is not None:
+            notes.append(f"skipped {e.id}: {reason}")
+        if not reason and not _is_noise(e):
+            eps.append(e)
     eps.sort(key=lambda e: (not e.verified, e.method.upper() != "GET", -e.count))
-    tools: list[Tool] = []
+    sql = source.kind == "sql"
+    tools: list[Tool] = _sql_tools(source, prefix) if sql else []
     taken: set[str] = set()
-    for e in eps[:MAX_TOOLS]:
+    for e in [] if sql else eps[:MAX_TOOLS]:
         tname = _tool_name(e, prefix, taken)
-        title = e.summary.strip().rstrip(".") or " ".join(tname.split("_")[1:]).capitalize()
+        title = " ".join(e.summary.split()).rstrip(".") or " ".join(tname.split("_")[1:]).capitalize()
         description = _first_sentence(e.summary, e.description, title)
         extra = e.description.strip()
         if extra and _first_sentence(extra) != description:
@@ -214,15 +323,17 @@ def draft(source: Source, name: str | None = None) -> Plan:
         tools.append(
             Tool(
                 name=tname, title=title[:80], description=description, endpoint=e.id, args=args,
-                output=_output(e.response_example), read_only=e.method.upper() == "GET", example=example,
+                output=Output() if _is_map(e) else _output(e.response_example), body_encoding=e.body_encoding,
+                read_only=e.method.upper() == "GET", example=example,
             )
         )  # fmt: skip
 
     listed = ", ".join(t.name for t in tools)
-    description = _first_sentence(source.description) or f"MCP server for {source.title}."
+    title = " ".join(source.title.split())  # one line: it goes into README.md and SKILL.md
+    description = _first_sentence(source.description) or f"MCP server for {title}."
     return Plan(
         name=name,
-        title=source.title,
+        title=title,
         description=description if len(description) <= 100 else description[:99] + "…",
         instructions=(
             f"Tools for {source.title}: {listed}. Search or list first, then pass the returned ids to the "
@@ -233,6 +344,6 @@ def draft(source: Source, name: str | None = None) -> Plan:
         env_prefix=env_prefix,
         headers=dict(source.headers),
         auth=_auth(source, env_prefix),
-        impersonate=source.kind == "har",
+        impersonate=source.kind in ("har", "curl"),  # browser traffic: the site saw a browser's TLS fingerprint
         tools=tools,
     )

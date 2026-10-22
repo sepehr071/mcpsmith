@@ -7,16 +7,20 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest]
         python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: windows-latest  # keychain, Chrome discovery, agent config paths and jadx.bat differ there
+            python: "3.12"
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: ${{ matrix.python }}
-      - run: uv sync --locked
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pytest -q
+      - run: uv sync --locked --extra sql
+      - run: uv run --extra sql ruff check .
+      - run: uv run --extra sql ruff format --check .
+      - run: uv run --extra sql pytest -q

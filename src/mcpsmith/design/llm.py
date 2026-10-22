@@ -81,14 +81,14 @@ def _post(client: httpx.Client, url: str, headers: dict[str, str], body: dict[st
     return r.json()
 
 
-def _anthropic(client, base, key, model, system, messages) -> tuple[str, Any]:
+def _anthropic(client, base, key, model, system, messages, max_tokens=MAX_TOKENS) -> tuple[str, Any, dict[str, int]]:
     data = _post(
         client,
         f"{base}/messages",
         {"x-api-key": key or "", "anthropic-version": "2023-06-01"},
         {
             "model": model,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": max_tokens,
             "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
             "messages": messages,
         },
@@ -101,21 +101,25 @@ def _anthropic(client, base, key, model, system, messages) -> tuple[str, Any]:
         u.get("input_tokens"), u.get("output_tokens"),
         u.get("cache_read_input_tokens"), u.get("cache_creation_input_tokens"),
     )  # fmt: skip
+    usage = {
+        "input": u.get("input_tokens") or 0,
+        "output": u.get("output_tokens") or 0,
+        "cache_read": u.get("cache_read_input_tokens") or 0,
+        "cache_write": u.get("cache_creation_input_tokens") or 0,
+    }
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     # Pass the whole content back (thinking blocks included) so later turns stay valid.
-    return text, data.get("content", [])
+    return text, data.get("content", []), usage
 
 
-def _openai(client, base, key, model, system, messages, provider) -> tuple[str, Any]:
+def _openai(client, base, key, model, system, messages, provider) -> tuple[str, Any, dict[str, int]]:
     sys_content: Any = system
     if provider == "openrouter" and model.startswith("anthropic/"):
         sys_content = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
-    data = _post(
-        client,
-        f"{base}/chat/completions",
-        {"Authorization": f"Bearer {key}"} if key else {},
-        {"model": model, "messages": [{"role": "system", "content": sys_content}, *messages]},
-    )
+    body: dict[str, Any] = {"model": model, "messages": [{"role": "system", "content": sys_content}, *messages]}
+    if provider in ("openai", "ollama"):  # every caller wants one JSON object; JSON mode keeps small models to it
+        body["response_format"] = {"type": "json_object"}
+    data = _post(client, f"{base}/chat/completions", {"Authorization": f"Bearer {key}"} if key else {}, body)
     u = data.get("usage") or {}
     details = u.get("prompt_tokens_details") or {}
     log.info(
@@ -123,8 +127,42 @@ def _openai(client, base, key, model, system, messages, provider) -> tuple[str, 
         provider, u.get("prompt_tokens"), u.get("completion_tokens"),
         details.get("cached_tokens"), details.get("cache_write_tokens"),
     )  # fmt: skip
+    usage = {
+        "input": u.get("prompt_tokens") or 0,
+        "output": u.get("completion_tokens") or 0,
+        "cache_read": details.get("cached_tokens") or 0,
+        "cache_write": details.get("cache_write_tokens") or 0,
+    }
     text = data["choices"][0]["message"].get("content") or ""
-    return text, text
+    return text, text, usage
+
+
+def _resolve(provider: str, model: str | None) -> tuple[str, str | None, str]:
+    """(base URL, API key, model) for a provider, from the environment."""
+    if provider not in PROVIDERS:
+        raise ValueError(f"unknown provider {provider!r}; use one of {', '.join(PROVIDERS)}")
+    base, key_env, default_model = PROVIDERS[provider]
+    key = os.environ.get(key_env) if key_env else None
+    if key_env and not key:
+        raise ValueError(f"set {key_env} to use provider {provider!r}")
+    model = model or os.environ.get("MCPSMITH_MODEL") or default_model
+    return os.environ.get("MCPSMITH_BASE_URL", base).rstrip("/"), key, model
+
+
+def ask(
+    provider: str, system: str, user: str, model: str | None = None, max_tokens: int = 4096
+) -> tuple[str, dict[str, int]]:
+    """One request: `system` is the cached static prefix, `user` the only dynamic part.
+
+    Returns the reply text and the token usage (input, output, cache_read, cache_write; 0 when not reported)."""
+    base, key, model = _resolve(provider, model)
+    messages = [{"role": "user", "content": user}]
+    with httpx.Client(transport=_transport, timeout=600) as client:
+        if provider == "anthropic":
+            text, _, usage = _anthropic(client, base, key, model, system, messages, max_tokens)
+        else:
+            text, _, usage = _openai(client, base, key, model, system, messages, provider)
+    return text, usage
 
 
 def design(
@@ -136,24 +174,16 @@ def design(
     max_rounds: int = 3,
 ) -> Plan:
     """Ask an LLM for a Plan; send validation errors back until it is clean or max_rounds is spent."""
-    if provider not in PROVIDERS:
-        raise ValueError(f"unknown provider {provider!r}; use one of {', '.join(PROVIDERS)}")
-    base, key_env, default_model = PROVIDERS[provider]
-    base = os.environ.get("MCPSMITH_BASE_URL", base).rstrip("/")
-    model = model or os.environ.get("MCPSMITH_MODEL") or default_model
-    key = os.environ.get(key_env) if key_env else None
-    if key_env and not key:
-        raise ValueError(f"set {key_env} to use provider {provider!r}")
-
+    base, key, model = _resolve(provider, model)
     system = system_prompt()
     messages: list[dict[str, Any]] = [{"role": "user", "content": user_prompt(source, start or draft(source), goal)}]
     errors: list[str] = []
     with httpx.Client(transport=_transport, timeout=600) as client:
         for round_ in range(1, max_rounds + 1):
             if provider == "anthropic":
-                text, content = _anthropic(client, base, key, model, system, messages)
+                text, content, _ = _anthropic(client, base, key, model, system, messages)
             else:
-                text, content = _openai(client, base, key, model, system, messages, provider)
+                text, content, _ = _openai(client, base, key, model, system, messages, provider)
             plan, errors = check(text, source)
             log.info("design round %d: %d errors", round_, len(errors))
             if plan is not None and not errors:

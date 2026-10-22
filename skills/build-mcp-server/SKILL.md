@@ -5,7 +5,7 @@ description: Build a curated, tested MCP server (agent tools) with mcpsmith. Use
 
 # Build an MCP server with mcpsmith
 
-Not set up yet? `uvx mcpsmith setup` registers mcpsmith, Chrome DevTools MCP and REA with the user's agents.
+Not set up yet? `uvx mcpsmith setup` registers mcpsmith and Chrome DevTools MCP with the user's agents (`--rea` also installs REA; `--dry-run` shows the changes first).
 
 mcpsmith turns an OpenAPI file or a recorded website session (HAR) into a Python MCP server project with tests, CI, a publish workflow and a Claude Code plugin. You design the tools; mcpsmith generates and checks the code.
 
@@ -109,6 +109,8 @@ Local, with every agent found (Claude Code, Codex, Cursor, Gemini CLI); ask the 
 ```
 mcpsmith install /abs/path/site-mcp        # --dry-run first; --pypi once it is released
 ```
+
+MCP: `smith_install(project)` only returns the planned changes (`dry_run` defaults to true). Show them to the user; after a yes, call `smith_install(project, dry_run=false)`.
 
 The user restarts their agent. Needed env vars of the generated server: `<P>_PROXY` (proxy URL or comma list), `<P>_BASE_URL`, and the auth var named in the plan (signin auth needs none: its `<prefix>_login` tool signs the user in).
 

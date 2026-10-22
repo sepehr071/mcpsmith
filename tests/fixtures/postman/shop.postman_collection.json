@@ -1,0 +1,144 @@
+{
+  "info": {
+    "_postman_id": "00000000-0000-4000-8000-000000000000",
+    "name": "Example Shop",
+    "description": "Hand-written test collection. Contact: owner@example.org",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{"key": "token", "value": "tok_FAKE0123456789abcdefSECRET", "type": "string"}]
+  },
+  "variable": [
+    {"key": "baseUrl", "value": "https://api.shop.example.com/v1"},
+    {"key": "apiToken", "value": "tok_FAKE0123456789SECRET"}
+  ],
+  "item": [
+    {
+      "name": "Products",
+      "item": [
+        {
+          "name": "Search products",
+          "request": {
+            "method": "GET",
+            "header": [
+              {"key": "Accept", "value": "application/json"},
+              {"key": "X-Api-Key", "value": "key_FAKE0123456789SECRET"},
+              {"key": "X-Client-Version", "value": "3.2"}
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/products?q=lamp&page=2&access_token=FAKEACCESS0123456789&debug=1",
+              "host": ["{{baseUrl}}"],
+              "path": ["products"],
+              "query": [
+                {"key": "q", "value": "lamp"},
+                {"key": "page", "value": "2"},
+                {"key": "access_token", "value": "FAKEACCESS0123456789"},
+                {"key": "debug", "value": "1", "disabled": true}
+              ]
+            }
+          },
+          "response": [
+            {
+              "name": "ok",
+              "code": 200,
+              "body": "{\"items\": [{\"id\": 7, \"title\": \"Desk lamp\", \"price\": 19.5, \"seller_email\": \"seller@example.org\"}], \"total\": 1}"
+            }
+          ]
+        },
+        {
+          "name": "Get product",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/products/:productId",
+              "host": ["{{baseUrl}}"],
+              "path": ["products", ":productId"],
+              "variable": [{"key": "productId", "value": "7"}]
+            }
+          },
+          "response": [
+            {"name": "missing", "code": 404, "body": "{\"error\": \"not found\"}"},
+            {"name": "ok", "code": 200, "body": "{\"id\": 7, \"title\": \"Desk lamp\"}"}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Orders",
+      "auth": {
+        "type": "apikey",
+        "apikey": [
+          {"key": "key", "value": "X-Shop-Key"},
+          {"key": "value", "value": "FAKEAPIKEY0123456789"},
+          {"key": "in", "value": "header"}
+        ]
+      },
+      "item": [
+        {
+          "name": "Create order",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"product_id\": {{productId}}, \"quantity\": 2, \"email\": \"buyer@example.org\", \"payment_token\": \"pay_FAKE0123456789SECRET\"}",
+              "options": {"raw": {"language": "json"}}
+            },
+            "url": "{{baseUrl}}/orders/{{orderGroup}}/items"
+          }
+        },
+        {
+          "name": "Cancel order",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {"key": "reason", "value": "changed my mind"},
+                {"key": "password", "value": "FAKEPASSWORD123"}
+              ]
+            },
+            "url": "{{baseUrl}}/orders/:orderId/cancel"
+          }
+        },
+        {
+          "name": "Upload receipt",
+          "request": {
+            "auth": {"type": "noauth"},
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {"key": "note", "value": "paper copy", "type": "text"},
+                {"key": "scan", "type": "file", "src": "/tmp/receipt.png"}
+              ]
+            },
+            "url": "{{baseUrl}}/receipts"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Legacy",
+      "item": [
+        {
+          "name": "Ping",
+          "request": {
+            "auth": {"type": "basic", "basic": [{"key": "password", "value": "FAKEBASICPASS"}]},
+            "method": "GET",
+            "url": {"protocol": "https", "host": ["status", "example", "com"], "path": ["ping"]}
+          }
+        },
+        {
+          "name": "Signed call",
+          "request": {
+            "auth": {"type": "awsv4"},
+            "method": "GET",
+            "url": "{{baseUrl}}/signed"
+          }
+        }
+      ]
+    }
+  ]
+}

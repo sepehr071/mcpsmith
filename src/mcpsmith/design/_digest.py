@@ -51,7 +51,21 @@ def _rank(e: Endpoint) -> tuple:
     return (e.method.upper() != "GET", -e.count, not listy, e.path, e.method)
 
 
+def _table(e: Endpoint, level: int) -> str:
+    """A database table: its columns with type and keys, then sample rows, one compact JSON row per line."""
+    lines = [f"### {e.id}" + (f"\n{e.description}" if e.description else "")]
+    if level >= BRIEF:
+        return "\n".join([*lines, "columns: " + ", ".join(p.name for p in e.params)])
+    lines.append("columns: " + "; ".join(f"{p.name} {p.description}" for p in e.params))
+    clip, depth, body_clip = LEVELS[level]
+    rows = e.response_example if isinstance(e.response_example, list) else []
+    lines += [_clip(_json(skeleton(r, clip, depth)), body_clip) for r in rows]
+    return "\n".join(lines)
+
+
 def _endpoint(e: Endpoint, level: int) -> str:
+    if e.method == "SQL":
+        return _table(e, level)
     head = f"### {e.id}\n{e.method.upper()} {e.path}"
     if e.count > 1:
         head += f"  (seen {e.count}x)"
@@ -100,7 +114,10 @@ def digest(source: Source, budget: int = 60_000) -> str:
     if source.headers:
         head.append("headers: " + "; ".join(f"{k}: {_clip(v, 60)}" for k, v in source.headers.items()))
     eps = sorted(source.endpoints, key=_rank)
-    head.append(f"\n## Endpoints ({len(eps)}, GET first, most used first; `*` = required)")
+    if source.kind == "sql":
+        head.append(f"\n## Tables ({len(eps)}, most rows first; sample rows below the columns, personal values masked)")
+    else:
+        head.append(f"\n## Endpoints ({len(eps)}, GET first, most used first; `*` = required)")
     header = "\n".join(head)
 
     levels = [0] * len(eps)

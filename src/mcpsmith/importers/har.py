@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import email
+import hashlib
 import json
 import re
 from collections import Counter
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 from mcpsmith.model import AuthScheme, Endpoint, Param, Source
 
@@ -67,14 +69,18 @@ BROWSER_PREFIXES = (":", "sec-", "proxy-")
 # PERSONAL ones are replaced by a placeholder.
 SECRET = {
     *"session sess sid token tokens key apikey secret password passwd pwd pass sig signature auth authorization".split(),
-    *"ticket otp nonce csrf xsrf jwt bearer credential credentials cookie".split(),
+    *"ticket otp nonce csrf xsrf jwt bearer credential credentials cookie cvv cvc pin".split(),
 }
 PERSONAL = {
     *"email mail phone mobile tel address password national ssn birth birthday firstname lastname fullname".split()
 }
 PERSON_OWNERS = {"user", "account", "customer", "device", "member", "profile", "client"}
-# Names written without separators, or split across parts ("first_name").
-SECRET_WHOLE = ("accesstoken", "refreshtoken", "authtoken", "apikey", "sessionid", "sessiontoken", "secretkey")
+# Names written without separators, or split across parts ("first_name"), matched inside the joined name
+# ("clientsecret", "x-app-key"). Only words no ordinary name contains: "key" or "pass" alone would hit monkey, compass.
+SECRET_WHOLE = (
+    *"token secret password passwd passphrase credential apikey appkey accesskey privatekey authkey".split(),
+    *"clientkey masterkey signingkey encryptionkey secretkey sessionid".split(),
+)
 PERSONAL_WHOLE = (
     "firstname",
     "lastname",
@@ -102,32 +108,46 @@ UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 OPAQUE = re.compile(r"^[A-Za-z0-9_=+-]{16,}$")
 WORD = re.compile(r"^[A-Za-z]+$")
 NOT_RESOURCE = {"api", "rest", "public", "v"}
+REDACT_QUERY = {"code", "state"}  # OAuth redirect values: one-time, but still a login in flight
+GRAPHQL = re.compile(r"\s*(?:(?:query|mutation|subscription)\b[^{]*)?\{")  # a GraphQL document, not a search text
+GRAPHQL_OP = re.compile(r"\s*(?:query|mutation|subscription)\s+([_A-Za-z][_A-Za-z0-9]*)")
+GRAPHQL_NAME = re.compile(r"[_A-Za-z][_A-Za-z0-9]*")
 
 
 def parse(har: dict, hosts: list[str] | None = None) -> Source:
+    try:
+        return _parse(har, hosts)
+    except (KeyError, TypeError, AttributeError, IndexError) as e:
+        raise ValueError(f"malformed HAR ({type(e).__name__}: {e})") from e
+
+
+def _parse(har: dict, hosts: list[str] | None) -> Source:
     entries = [e for e in map(dict, (har.get("log") or {}).get("entries") or []) if _keep(e, hosts)]
     for e in entries:
         u = urlsplit(e["request"]["url"])
         e["_base"] = f"{u.scheme}://{u.netloc}"
         e["_segs"] = [s for s in u.path.split("/") if s]
         e["_slash"] = u.path.endswith("/") and u.path != "/"
+        e["_op"] = _graphql_op(e["request"], u)
     _template(entries)
 
-    groups: dict[tuple[str, str, str], list[dict]] = {}
+    groups: dict[tuple[str, str, str, str], list[dict]] = {}
     for e in entries:
-        groups.setdefault((e["request"]["method"].upper(), e["_base"], e["_path"]), []).append(e)
+        groups.setdefault((e["request"]["method"].upper(), e["_base"], e["_path"], e["_op"]), []).append(e)
 
     bases = Counter(e["_base"] for e in entries)
     base_url = bases.most_common(1)[0][0] if bases else ""
     schemes: dict[str, AuthScheme] = {}
     endpoints: list[Endpoint] = []
     ids: set[str] = set()
-    for (method, base, path), group in groups.items():
+    for (method, base, path, op), group in groups.items():
         ok = [e for e in group if 0 < e["response"].get("status", 0) < 400]
         ep = _endpoint(method, path, ok or group, schemes)
         ep.base_url = "" if base == base_url else base
+        op = f"#{op}" if op else ""  # one endpoint per GraphQL operation: 'POST /graphql#GetUser'
+        ep.id += op
         if ep.id in ids:
-            ep.id = f"{method} {base}{path}"
+            ep.id = f"{method} {base}{path}{op}"
         ids.add(ep.id)
         endpoints.append(ep)
 
@@ -155,7 +175,27 @@ def _keep(e: dict, hosts: list[str] | None) -> bool:
     if e.get("_resourceType") and e["_resourceType"] not in ("xhr", "fetch"):
         return False
     e["_json"] = _json(resp.get("content") or {})
-    return e["_json"] is not None or "json" in ((resp.get("content") or {}).get("mimeType") or "")
+    if e["_json"] is not None or "json" in ((resp.get("content") or {}).get("mimeType") or ""):
+        return True
+    # a write that answers 204, text or nothing (DELETE, PUT, form posts) is still an endpoint
+    return req.get("method", "").upper() != "GET" and 200 <= (resp.get("status") or 0) < 300
+
+
+def _graphql_op(req: dict, u) -> str:
+    """The GraphQL operation of a request: operationName, else the query's own name, else a hash; '' if not GraphQL."""
+    post = req.get("postData") or {}
+    body = _json({"text": post.get("text"), "encoding": post.get("encoding")})
+    if not isinstance(body, dict) and "graphql" in u.path.lower():  # GET /graphql?query=...
+        body = dict(parse_qsl(u.query))
+    if not isinstance(body, dict):
+        return ""
+    query, name = body.get("query"), body.get("operationName")
+    if isinstance(name, str) and GRAPHQL_NAME.fullmatch(name) and ("query" in body or "extensions" in body):
+        return name  # 'extensions' alone: a persisted query sent by its hash
+    if not isinstance(query, str) or not GRAPHQL.match(query):
+        return ""
+    m = GRAPHQL_OP.match(query)
+    return m.group(1) if m else hashlib.sha256(query.encode()).hexdigest()[:8]
 
 
 def _json(content: dict) -> Any:
@@ -177,8 +217,38 @@ def _json(content: dict) -> Any:
         return None
 
 
+def _post_body(post: dict) -> tuple[Any, str, list[str]]:
+    """(body, encoding, names of file parts left out) of a HAR postData; a form becomes {name: value}."""
+    body = _json({"text": post.get("text"), "encoding": post.get("encoding")})
+    if body is not None:
+        return body, "json", []
+    mime, text, params = (post.get("mimeType") or "").lower(), post.get("text") or "", post.get("params") or []
+    if "multipart/" in mime:
+        encoding = "multipart"
+        fields = [(p.get("name"), p.get("value"), bool(p.get("fileName"))) for p in params]
+        if not fields:
+            msg = email.message_from_string(f"Content-Type: {post.get('mimeType')}\n\n{text}")
+            parts = msg.get_payload() if msg.is_multipart() else []
+            fields = [
+                (p.get_param("name", header="content-disposition"), p.get_payload(), p.get_filename() is not None)
+                for p in parts
+            ]
+    elif "x-www-form-urlencoded" in mime or params:
+        encoding = "form"
+        pairs = parse_qsl(text, keep_blank_values=True) or [(p.get("name"), p.get("value")) for p in params]
+        fields = [(k, v, False) for k, v in pairs]
+    else:
+        return None, "json", []
+    form: dict[str, list] = {}
+    for name, value, is_file in fields:
+        if isinstance(name, str) and not is_file:
+            form.setdefault(name, []).append(value)
+    files = [n for n, _, is_file in fields if is_file and isinstance(n, str)]
+    return {k: v[0] if len(v) == 1 else v for k, v in form.items()} or None, encoding, files
+
+
 def _is_id(seg: str) -> bool:
-    return seg.isdigit() or bool(UUID.match(seg)) or _opaque(seg)
+    return seg.isdigit() or bool(UUID.match(seg)) or _opaque(seg) or bool(EMAIL.fullmatch(unquote(seg)))
 
 
 def _value_like(seg: str) -> bool:
@@ -240,9 +310,9 @@ def _endpoint(method: str, path: str, group: list[dict], schemes: dict[str, Auth
     for name, value in group[0]["_pvals"].items():
         values = [e["_pvals"][name] for e in group]
         t = _infer(values)
-        params.append(
-            Param(name=name, location="path", type=t, required=True, example=_scrub(_convert(value, t), name))
-        )
+        # an opaque value (token, hash, key) may be a secret whatever the segment is called
+        ex = None if any(_opaque(v) for v in values) else _scrub(_convert(unquote(value), t), name)
+        params.append(Param(name=name, location="path", type=t, required=True, example=ex))
 
     auth: list[str] = []
     queries = [parse_qsl(urlsplit(e["request"]["url"]).query, keep_blank_values=True) for e in group]
@@ -256,13 +326,14 @@ def _endpoint(method: str, path: str, group: list[dict], schemes: dict[str, Auth
         values = [v for q in queries for k, v in q if k == name]
         repeated = any(sum(k == name for k, _ in q) > 1 for q in queries)
         t = "array" if repeated else _infer(values)
+        ex = _scrub(values if repeated else _convert(values[0], t), name)
         params.append(
             Param(
                 name=name,
                 location="query",
                 type=t,
                 required=all(any(k == name for k, _ in q) for q in queries),
-                example=_scrub(values if repeated else _convert(values[0], t), name),
+                example="<redacted>" if name.lower() in REDACT_QUERY else ex,
             )
         )
 
@@ -284,10 +355,9 @@ def _endpoint(method: str, path: str, group: list[dict], schemes: dict[str, Auth
             schemes.setdefault(s.name, s)
             auth.append(s.name)
 
-    body_example = None
+    body_example, encoding, files = None, "json", []
     for e in group:
-        post = e["request"].get("postData") or {}
-        body = _json({"text": post.get("text"), "encoding": post.get("encoding")})
+        body, encoding, files = _post_body(e["request"].get("postData") or {})
         if body is not None:
             body_example = _scrub(body)
             break
@@ -297,8 +367,10 @@ def _endpoint(method: str, path: str, group: list[dict], schemes: dict[str, Auth
         id=f"{method} {path}",
         method=method,
         path=path,
+        description=f"file parts left out (uploads are not supported): {', '.join(files)}" if files else "",
         params=params,
         body_example=body_example,
+        body_encoding=encoding if body_example is not None else "json",
         response_example=_trim(_scrub(largest.get("_json"))),  # scrub before trimming so no half-cut email survives
         auth=list(dict.fromkeys(auth)),
         count=len(group),
@@ -350,7 +422,9 @@ def _static_headers(entries: list[dict]) -> dict[str, str]:
             continue
         if name.startswith(BROWSER_PREFIXES) or name in SKIP_HEADERS:
             continue
-        if _is_secret(name) or _is_personal(name) or _opaque(value) or value.startswith("eyJ"):
+        if _is_secret(name) or _is_personal(name) or value.startswith("eyJ"):
+            continue
+        if any(_opaque(s) for s in re.split(r"[/?&=#;,:\s]+", value)):  # a token or id anywhere in the value
             continue
         if _scrub(value) != value:  # an email, phone or JWT inside the value
             continue
@@ -360,8 +434,9 @@ def _static_headers(entries: list[dict]) -> dict[str, str]:
 
 def _header_value(h: dict) -> str:
     value = h.get("value") or ""
-    if h["name"].lower() == "referer":  # the page URL often carries tickets and ids in its query
-        value = urlsplit(value)._replace(query="", fragment="").geturl()
+    if h["name"].lower() in ("referer", "origin"):  # the page URL carries tickets and ids in its path and query
+        u = urlsplit(value)
+        value = f"{u.scheme}://{u.netloc.rpartition('@')[2]}" if u.scheme and u.netloc else ""
     return value
 
 
@@ -374,7 +449,8 @@ def _parts(name: str) -> list[str]:
 
 def _is_secret(name: str) -> bool:
     parts = _parts(name)
-    return bool(SECRET.intersection(parts)) or any(w in "".join(parts) for w in SECRET_WHOLE)
+    words = {p.rstrip("0123456789") for p in parts}  # token2, key1
+    return bool(SECRET & words) or any(w in "".join(parts) for w in SECRET_WHOLE)
 
 
 def _is_personal(name: str) -> bool:
@@ -418,7 +494,12 @@ def _scrub(data: Any, name: str = "") -> Any:
     if isinstance(data, list):
         return [_scrub(v) for v in data]
     if isinstance(data, dict):
-        return {k: _scrub(v, k) for k, v in data.items()}
+        # {"name": "api_token", "value": "..."}: the value is judged by the name it carries
+        label = next((data[k] for k in ("name", "key") if isinstance(data.get(k), str)), "")
+        return {
+            _scrub(k) if isinstance(k, str) else k: _scrub(v, label if k == "value" and label else k)
+            for k, v in data.items()
+        }
     if isinstance(data, str):
         return PHONE.sub("09000000000", EMAIL.sub("user@example.com", JWT.sub("<redacted>", data)))
     return data

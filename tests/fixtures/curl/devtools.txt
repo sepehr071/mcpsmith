@@ -1,0 +1,32 @@
+# Hand-written test commands in the shape of Chrome DevTools "Copy as cURL (bash)". No real data.
+curl 'https://api.shop.example.com/v1/products/123?lang=en&api_key=FAKEKEY0123456789' \
+  -H 'accept: application/json' \
+  -H 'authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.FAKESIGNATURE' \
+  -H 'x-auth-token: FAKETOKEN0123456789abcdef' \
+  -H 'x-app-version: 5.1' \
+  -b 'session=FAKESESSION0123456789; theme=dark' \
+  --compressed
+
+curl 'https://api.shop.example.com/v1/products/456?lang=fa&api_key=FAKEKEY0123456789' \
+  -H 'accept: application/json' \
+  -H 'authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmYWtlIn0.FAKESIGNATURE' \
+  -H 'x-app-version: 5.1' \
+  --compressed
+
+curl 'https://api.shop.example.com/v1/cart' \
+  -H 'content-type: application/json' \
+  -H 'x-app-version: 5.1' \
+  --data-raw $'{"product_id":123,"note":"it\'s a gift\\nthanks","refresh_token":"FAKEREFRESH0123456789","email":"buyer@example.org"}' \
+  --compressed
+
+curl 'https://api.shop.example.com/v1/login' \
+  -X 'PUT' \
+  -H 'x-app-version: 5.1' \
+  --data-urlencode 'username=someone' \
+  --data-urlencode 'password=FAKE PASS 123' \
+  -d 'remember=1'
+
+curl -sS https://api.shop.example.com/v1/avatar \
+  -F 'caption=hello world' \
+  -F 'image=@avatar.png;type=image/png' \
+  -u 'someone:FAKEPASS'
